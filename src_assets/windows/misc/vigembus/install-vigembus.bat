@@ -1,7 +1,7 @@
 @echo off
 
 rem Get temp directory
-set temp_dir=%temp%/Sunshine
+set temp_dir=%temp%\Sunshine
 
 rem Create temp directory if it doesn't exist
 if not exist "%temp_dir%" mkdir "%temp_dir%"
@@ -26,7 +26,7 @@ rem Download the exe
 curl -s -L -o "%temp_dir%\vigembus.exe" %browser_download_url%
 
 rem Install vigembus
-%temp_dir%\vigembus.exe /passive /promptrestart
+%temp_dir%\vigembus.exe /qb /promptrestart
 
 rem Delete temp directory
 rmdir /S /Q "%temp_dir%"
