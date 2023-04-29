@@ -41,19 +41,23 @@ namespace confighttp {
   namespace fs = std::filesystem;
   namespace pt = boost::property_tree;
 
+  using http_server_t = SimpleWeb::Server<SimpleWeb::HTTP>;
   using https_server_t = SimpleWeb::Server<SimpleWeb::HTTPS>;
 
   using args_t = SimpleWeb::CaseInsensitiveMultimap;
-  using resp_https_t = std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response>;
-  using req_https_t = std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request>;
+  template <class T>
+  using resp_t = std::shared_ptr<typename SimpleWeb::ServerBase<T>::Response>;
+  template <class T>
+  using req_t = std::shared_ptr<typename SimpleWeb::ServerBase<T>::Request>;
 
   enum class op_e {
     ADD,
     REMOVE
   };
 
+  template <class T>
   void
-  print_req(const req_https_t &request) {
+  print_req(const req_t<T> &request) {
     BOOST_LOG(debug) << "METHOD :: "sv << request->method;
     BOOST_LOG(debug) << "DESTINATION :: "sv << request->path;
 
@@ -70,8 +74,9 @@ namespace confighttp {
     BOOST_LOG(debug) << " [--] "sv;
   }
 
+  template <class T>
   void
-  send_unauthorized(resp_https_t response, req_https_t request) {
+  send_unauthorized(resp_t<T> response, req_t<T> request) {
     auto address = request->remote_endpoint().address().to_string();
     BOOST_LOG(info) << "Web UI: ["sv << address << "] -- not authorized"sv;
     const SimpleWeb::CaseInsensitiveMultimap headers {
@@ -80,18 +85,19 @@ namespace confighttp {
     response->write(SimpleWeb::StatusCode::client_error_unauthorized, headers);
   }
 
+  template <class T>
   void
-  send_redirect(resp_https_t response, req_https_t request, const char *path) {
+  send_redirect(resp_t<T> response, req_t<T> request, const char *path) {
     auto address = request->remote_endpoint().address().to_string();
-    BOOST_LOG(info) << "Web UI: ["sv << address << "] -- not authorized"sv;
     const SimpleWeb::CaseInsensitiveMultimap headers {
       { "Location", path }
     };
     response->write(SimpleWeb::StatusCode::redirection_temporary_redirect, headers);
   }
 
+  template <class T>
   bool
-  authenticate(resp_https_t response, req_https_t request) {
+  authenticate(resp_t<T> response, req_t<T> request) {
     auto address = request->remote_endpoint().address().to_string();
     auto ip_type = net::from_address(address);
 
@@ -100,15 +106,24 @@ namespace confighttp {
       response->write(SimpleWeb::StatusCode::client_error_forbidden);
       return false;
     }
+    else if (request->local_endpoint().port() == map_port(PORT_HTTP) && ip_type != net::net_e::PC) {
+      // Redirect all external connections to the HTTP config endpoint to HTTPS
+      auto local_address = request->local_endpoint().address().to_string();
+      auto new_location = "https://"s + local_address + ':' + std::to_string(map_port(PORT_HTTPS)) + '/';
+      BOOST_LOG(info) << "Web UI: ["sv << address << "] -- redirected to "sv << new_location;
+      send_redirect<T>(response, request, new_location.c_str());
+      return false;
+    }
 
     // If credentials are shown, redirect the user to a /welcome page
     if (config::sunshine.username.empty()) {
-      send_redirect(response, request, "/welcome");
+      BOOST_LOG(info) << "Web UI: ["sv << address << "] -- not authorized"sv;
+      send_redirect<T>(response, request, "/welcome");
       return false;
     }
 
     auto fg = util::fail_guard([&]() {
-      send_unauthorized(response, request);
+      send_unauthorized<T>(response, request);
     });
 
     auto auth = request->header.find("authorization");
@@ -136,8 +151,9 @@ namespace confighttp {
     return true;
   }
 
+  template <class T>
   void
-  not_found(resp_https_t response, req_https_t request) {
+  not_found(resp_t<T> response, req_t<T> request) {
     pt::ptree tree;
     tree.put("root.<xmlattr>.status_code", 404);
 
@@ -151,11 +167,12 @@ namespace confighttp {
   }
 
   // todo - combine these functions into a single function that accepts the page, i.e "index", "pin", "apps"
+  template <class T>
   void
-  getIndexPage(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request)) return;
+  getIndexPage(resp_t<T> response, req_t<T> request) {
+    if (!authenticate<T>(response, request)) return;
 
-    print_req(request);
+    print_req<T>(request);
 
     std::string header = read_file(WEB_DIR "header.html");
     std::string content = read_file(WEB_DIR "index.html");
@@ -164,11 +181,12 @@ namespace confighttp {
     response->write(header + content, headers);
   }
 
+  template <class T>
   void
-  getPinPage(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request)) return;
+  getPinPage(resp_t<T> response, req_t<T> request) {
+    if (!authenticate<T>(response, request)) return;
 
-    print_req(request);
+    print_req<T>(request);
 
     std::string header = read_file(WEB_DIR "header.html");
     std::string content = read_file(WEB_DIR "pin.html");
@@ -177,11 +195,12 @@ namespace confighttp {
     response->write(header + content, headers);
   }
 
+  template <class T>
   void
-  getAppsPage(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request)) return;
+  getAppsPage(resp_t<T> response, req_t<T> request) {
+    if (!authenticate<T>(response, request)) return;
 
-    print_req(request);
+    print_req<T>(request);
 
     std::string header = read_file(WEB_DIR "header.html");
     std::string content = read_file(WEB_DIR "apps.html");
@@ -191,11 +210,12 @@ namespace confighttp {
     response->write(header + content, headers);
   }
 
+  template <class T>
   void
-  getClientsPage(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request)) return;
+  getClientsPage(resp_t<T> response, req_t<T> request) {
+    if (!authenticate<T>(response, request)) return;
 
-    print_req(request);
+    print_req<T>(request);
 
     std::string header = read_file(WEB_DIR "header.html");
     std::string content = read_file(WEB_DIR "clients.html");
@@ -204,11 +224,12 @@ namespace confighttp {
     response->write(header + content, headers);
   }
 
+  template <class T>
   void
-  getConfigPage(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request)) return;
+  getConfigPage(resp_t<T> response, req_t<T> request) {
+    if (!authenticate<T>(response, request)) return;
 
-    print_req(request);
+    print_req<T>(request);
 
     std::string header = read_file(WEB_DIR "header.html");
     std::string content = read_file(WEB_DIR "config.html");
@@ -217,11 +238,12 @@ namespace confighttp {
     response->write(header + content, headers);
   }
 
+  template <class T>
   void
-  getPasswordPage(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request)) return;
+  getPasswordPage(resp_t<T> response, req_t<T> request) {
+    if (!authenticate<T>(response, request)) return;
 
-    print_req(request);
+    print_req<T>(request);
 
     std::string header = read_file(WEB_DIR "header.html");
     std::string content = read_file(WEB_DIR "password.html");
@@ -230,11 +252,12 @@ namespace confighttp {
     response->write(header + content, headers);
   }
 
+  template <class T>
   void
-  getWelcomePage(resp_https_t response, req_https_t request) {
-    print_req(request);
+  getWelcomePage(resp_t<T> response, req_t<T> request) {
+    print_req<T>(request);
     if (!config::sunshine.username.empty()) {
-      send_redirect(response, request, "/");
+      send_redirect<T>(response, request, "/");
       return;
     }
     std::string header = read_file(WEB_DIR "header-no-nav.html");
@@ -244,11 +267,12 @@ namespace confighttp {
     response->write(header + content, headers);
   }
 
+  template <class T>
   void
-  getTroubleshootingPage(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request)) return;
+  getTroubleshootingPage(resp_t<T> response, req_t<T> request) {
+    if (!authenticate<T>(response, request)) return;
 
-    print_req(request);
+    print_req<T>(request);
 
     std::string header = read_file(WEB_DIR "header.html");
     std::string content = read_file(WEB_DIR "troubleshooting.html");
@@ -257,11 +281,12 @@ namespace confighttp {
     response->write(header + content, headers);
   }
 
+  template <class T>
   void
-  getFaviconImage(resp_https_t response, req_https_t request) {
+  getFaviconImage(resp_t<T> response, req_t<T> request) {
     // todo - combine function with getSunshineLogoImage and possibly getNodeModules
     // todo - use mime_types map
-    print_req(request);
+    print_req<T>(request);
 
     std::ifstream in(WEB_DIR "images/favicon.ico", std::ios::binary);
     SimpleWeb::CaseInsensitiveMultimap headers;
@@ -269,11 +294,12 @@ namespace confighttp {
     response->write(SimpleWeb::StatusCode::success_ok, in, headers);
   }
 
+  template <class T>
   void
-  getSunshineLogoImage(resp_https_t response, req_https_t request) {
+  getSunshineLogoImage(resp_t<T> response, req_t<T> request) {
     // todo - combine function with getFaviconImage and possibly getNodeModules
     // todo - use mime_types map
-    print_req(request);
+    print_req<T>(request);
 
     std::ifstream in(WEB_DIR "images/logo-sunshine-45.png", std::ios::binary);
     SimpleWeb::CaseInsensitiveMultimap headers;
@@ -287,9 +313,10 @@ namespace confighttp {
     return *(relPath.begin()) != fs::path("..");
   }
 
+  template <class T>
   void
-  getNodeModules(resp_https_t response, req_https_t request) {
-    print_req(request);
+  getNodeModules(resp_t<T> response, req_t<T> request) {
+    print_req<T>(request);
     fs::path webDirPath(WEB_DIR);
     fs::path nodeModulesPath(webDirPath / "node_modules");
 
@@ -321,11 +348,12 @@ namespace confighttp {
     }
   }
 
+  template <class T>
   void
-  getApps(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request)) return;
+  getApps(resp_t<T> response, req_t<T> request) {
+    if (!authenticate<T>(response, request)) return;
 
-    print_req(request);
+    print_req<T>(request);
 
     std::string content = read_file(config::stream.file_apps.c_str());
     SimpleWeb::CaseInsensitiveMultimap headers;
@@ -333,11 +361,12 @@ namespace confighttp {
     response->write(content, headers);
   }
 
+  template <class T>
   void
-  getLogs(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request)) return;
+  getLogs(resp_t<T> response, req_t<T> request) {
+    if (!authenticate<T>(response, request)) return;
 
-    print_req(request);
+    print_req<T>(request);
 
     std::string content = read_file(config::sunshine.log_file.c_str());
     SimpleWeb::CaseInsensitiveMultimap headers;
@@ -345,11 +374,12 @@ namespace confighttp {
     response->write(SimpleWeb::StatusCode::success_ok, content, headers);
   }
 
+  template <class T>
   void
-  saveApp(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request)) return;
+  saveApp(resp_t<T> response, req_t<T> request) {
+    if (!authenticate<T>(response, request)) return;
 
-    print_req(request);
+    print_req<T>(request);
 
     std::stringstream ss;
     ss << request->content.rdbuf();
@@ -416,11 +446,12 @@ namespace confighttp {
     proc::refresh(config::stream.file_apps);
   }
 
+  template <class T>
   void
-  deleteApp(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request)) return;
+  deleteApp(resp_t<T> response, req_t<T> request) {
+    if (!authenticate<T>(response, request)) return;
 
-    print_req(request);
+    print_req<T>(request);
 
     pt::ptree outputTree;
     auto g = util::fail_guard([&]() {
@@ -465,9 +496,10 @@ namespace confighttp {
     proc::refresh(config::stream.file_apps);
   }
 
+  template <class T>
   void
-  uploadCover(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request)) return;
+  uploadCover(resp_t<T> response, req_t<T> request) {
+    if (!authenticate<T>(response, request)) return;
 
     std::stringstream ss;
     std::stringstream configStream;
@@ -527,11 +559,12 @@ namespace confighttp {
     outputTree.put("path", path);
   }
 
+  template <class T>
   void
-  getConfig(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request)) return;
+  getConfig(resp_t<T> response, req_t<T> request) {
+    if (!authenticate<T>(response, request)) return;
 
-    print_req(request);
+    print_req<T>(request);
 
     pt::ptree outputTree;
     auto g = util::fail_guard([&]() {
@@ -553,11 +586,12 @@ namespace confighttp {
     }
   }
 
+  template <class T>
   void
-  saveConfig(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request)) return;
+  saveConfig(resp_t<T> response, req_t<T> request) {
+    if (!authenticate<T>(response, request)) return;
 
-    print_req(request);
+    print_req<T>(request);
 
     std::stringstream ss;
     std::stringstream configStream;
@@ -589,11 +623,12 @@ namespace confighttp {
     }
   }
 
+  template <class T>
   void
-  restart(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request)) return;
+  restart(resp_t<T> response, req_t<T> request) {
+    if (!authenticate<T>(response, request)) return;
 
-    print_req(request);
+    print_req<T>(request);
 
     std::stringstream ss;
     std::stringstream configStream;
@@ -621,11 +656,12 @@ namespace confighttp {
     outputTree.put("status", true);
   }
 
+  template <class T>
   void
-  savePassword(resp_https_t response, req_https_t request) {
-    if (!config::sunshine.username.empty() && !authenticate(response, request)) return;
+  savePassword(resp_t<T> response, req_t<T> request) {
+    if (!config::sunshine.username.empty() && !authenticate<T>(response, request)) return;
 
-    print_req(request);
+    print_req<T>(request);
 
     std::stringstream ss;
     std::stringstream configStream;
@@ -679,11 +715,12 @@ namespace confighttp {
     }
   }
 
+  template <class T>
   void
-  savePin(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request)) return;
+  savePin(resp_t<T> response, req_t<T> request) {
+    if (!authenticate<T>(response, request)) return;
 
-    print_req(request);
+    print_req<T>(request);
 
     std::stringstream ss;
     ss << request->content.rdbuf();
@@ -710,11 +747,12 @@ namespace confighttp {
     }
   }
 
+  template <class T>
   void
-  unpairAll(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request)) return;
+  unpairAll(resp_t<T> response, req_t<T> request) {
+    if (!authenticate<T>(response, request)) return;
 
-    print_req(request);
+    print_req<T>(request);
 
     pt::ptree outputTree;
 
@@ -727,11 +765,12 @@ namespace confighttp {
     outputTree.put("status", true);
   }
 
+  template <class T>
   void
-  closeApp(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request)) return;
+  closeApp(resp_t<T> response, req_t<T> request) {
+    if (!authenticate<T>(response, request)) return;
 
-    print_req(request);
+    print_req<T>(request);
 
     pt::ptree outputTree;
 
@@ -745,45 +784,57 @@ namespace confighttp {
     outputTree.put("status", true);
   }
 
+  template <typename T>
+  void
+  initialize_server_resources(SimpleWeb::Server<T> &server) {
+    server.default_resource["GET"] = not_found<T>;
+    server.resource["^/$"]["GET"] = getIndexPage<T>;
+    server.resource["^/pin$"]["GET"] = getPinPage<T>;
+    server.resource["^/apps$"]["GET"] = getAppsPage<T>;
+    server.resource["^/clients$"]["GET"] = getClientsPage<T>;
+    server.resource["^/config$"]["GET"] = getConfigPage<T>;
+    server.resource["^/password$"]["GET"] = getPasswordPage<T>;
+    server.resource["^/welcome$"]["GET"] = getWelcomePage<T>;
+    server.resource["^/troubleshooting$"]["GET"] = getTroubleshootingPage<T>;
+    server.resource["^/api/pin$"]["POST"] = savePin<T>;
+    server.resource["^/api/apps$"]["GET"] = getApps<T>;
+    server.resource["^/api/logs$"]["GET"] = getLogs<T>;
+    server.resource["^/api/apps$"]["POST"] = saveApp<T>;
+    server.resource["^/api/config$"]["GET"] = getConfig<T>;
+    server.resource["^/api/config$"]["POST"] = saveConfig<T>;
+    server.resource["^/api/restart$"]["POST"] = restart<T>;
+    server.resource["^/api/password$"]["POST"] = savePassword<T>;
+    server.resource["^/api/apps/([0-9]+)$"]["DELETE"] = deleteApp<T>;
+    server.resource["^/api/clients/unpair$"]["POST"] = unpairAll<T>;
+    server.resource["^/api/apps/close$"]["POST"] = closeApp<T>;
+    server.resource["^/api/covers/upload$"]["POST"] = uploadCover<T>;
+    server.resource["^/images/favicon.ico$"]["GET"] = getFaviconImage<T>;
+    server.resource["^/images/logo-sunshine-45.png$"]["GET"] = getSunshineLogoImage<T>;
+    server.resource["^/node_modules\\/.+$"]["GET"] = getNodeModules<T>;
+  }
+
   void
   start() {
     auto shutdown_event = mail::man->event<bool>(mail::shutdown);
 
     auto port_https = map_port(PORT_HTTPS);
+    https_server_t https_server { config::nvhttp.cert, config::nvhttp.pkey };
+    initialize_server_resources<SimpleWeb::HTTPS>(https_server);
+    https_server.config.reuse_address = true;
+    https_server.config.address = "0.0.0.0"s;
+    https_server.config.port = port_https;
 
-    https_server_t server { config::nvhttp.cert, config::nvhttp.pkey };
-    server.default_resource["GET"] = not_found;
-    server.resource["^/$"]["GET"] = getIndexPage;
-    server.resource["^/pin$"]["GET"] = getPinPage;
-    server.resource["^/apps$"]["GET"] = getAppsPage;
-    server.resource["^/clients$"]["GET"] = getClientsPage;
-    server.resource["^/config$"]["GET"] = getConfigPage;
-    server.resource["^/password$"]["GET"] = getPasswordPage;
-    server.resource["^/welcome$"]["GET"] = getWelcomePage;
-    server.resource["^/troubleshooting$"]["GET"] = getTroubleshootingPage;
-    server.resource["^/api/pin$"]["POST"] = savePin;
-    server.resource["^/api/apps$"]["GET"] = getApps;
-    server.resource["^/api/logs$"]["GET"] = getLogs;
-    server.resource["^/api/apps$"]["POST"] = saveApp;
-    server.resource["^/api/config$"]["GET"] = getConfig;
-    server.resource["^/api/config$"]["POST"] = saveConfig;
-    server.resource["^/api/restart$"]["POST"] = restart;
-    server.resource["^/api/password$"]["POST"] = savePassword;
-    server.resource["^/api/apps/([0-9]+)$"]["DELETE"] = deleteApp;
-    server.resource["^/api/clients/unpair$"]["POST"] = unpairAll;
-    server.resource["^/api/apps/close$"]["POST"] = closeApp;
-    server.resource["^/api/covers/upload$"]["POST"] = uploadCover;
-    server.resource["^/images/favicon.ico$"]["GET"] = getFaviconImage;
-    server.resource["^/images/logo-sunshine-45.png$"]["GET"] = getSunshineLogoImage;
-    server.resource["^/node_modules\\/.+$"]["GET"] = getNodeModules;
-    server.config.reuse_address = true;
-    server.config.address = "0.0.0.0"s;
-    server.config.port = port_https;
+    auto port_http = map_port(PORT_HTTP);
+    http_server_t http_server;
+    initialize_server_resources<SimpleWeb::HTTP>(http_server);
+    http_server.config.reuse_address = true;
+    http_server.config.address = "0.0.0.0"s;
+    http_server.config.port = port_http;
 
     auto accept_and_run = [&](auto *server) {
       try {
         server->start([](unsigned short port) {
-          BOOST_LOG(info) << "Configuration UI available at [https://localhost:"sv << port << "]";
+          BOOST_LOG(info) << "Configuration UI available at ["sv << (port == map_port(PORT_HTTPS) ? "https"sv : "http"sv) << "://localhost:"sv << port << "]";
         });
       }
       catch (boost::system::system_error &err) {
@@ -792,18 +843,21 @@ namespace confighttp {
           return;
         }
 
-        BOOST_LOG(fatal) << "Couldn't start Configuration HTTPS server on port ["sv << port_https << "]: "sv << err.what();
+        BOOST_LOG(fatal) << "Couldn't start configuration HTTP server on port ["sv << port_https << ", "sv << port_https << "]: "sv << err.what();
         shutdown_event->raise(true);
         return;
       }
     };
-    std::thread tcp { accept_and_run, &server };
+    std::thread ssl { accept_and_run, &https_server };
+    std::thread tcp { accept_and_run, &http_server };
 
     // Wait for any event
     shutdown_event->view();
 
-    server.stop();
+    https_server.stop();
+    http_server.stop();
 
+    ssl.join();
     tcp.join();
   }
 }  // namespace confighttp

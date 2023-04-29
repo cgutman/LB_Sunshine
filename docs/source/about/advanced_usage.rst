@@ -519,9 +519,10 @@ port
    ================ ============ ===========================
    Port Description Default Port Difference from config port
    ================ ============ ===========================
-   HTTPS            47984 TCP    -5
-   HTTP             47989 TCP    0
-   Web              47990 TCP    +1
+   Client HTTPS     47984 TCP    -5
+   Client HTTP      47989 TCP    0
+   Web UI HTTPS     47990 TCP    +1
+   Web UI HTTP      47991 TCP    +2
    RTSP             48010 TCP    +21
    Video            47998 UDP    +9
    Control          47999 UDP    +10

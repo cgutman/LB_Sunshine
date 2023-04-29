@@ -23,8 +23,11 @@ Usage
 
 #. Configure Sunshine in the web ui
 
-   The web ui is available on `https://localhost:47990 <https://localhost:47990>`_ by default. You may replace
-   `localhost` with your internal ip address.
+   For remote access, the web ui is accessible on `https://localhost:47990 <https://localhost:47990>`_ by default. You
+   may replace `localhost` with your internal ip address.
+
+   For local access, the web ui is available on `http://localhost:47991 <http://localhost:47991>`_. If accessed from
+   another PC, this will redirect to the HTTPS endpoint for security reasons.
 
    .. Attention:: Ignore any warning given by your browser about "insecure website". This is due to the SSL certificate
       being self signed.
