@@ -804,16 +804,17 @@ namespace platf::audio {
     /**
      * @brief Find the audio device ID given a user-specified name.
      * @param name The name provided by the user.
+     * @param state_mask state mask for EnumAudioEndpoints() to match against.
      * @return The matching device ID, or nothing if not found.
      */
     std::optional<std::wstring>
-    find_device_id_by_name(const std::string &name) {
+    find_device_id_by_name(const std::string &name, DWORD state_mask = DEVICE_STATE_ACTIVE) {
       if (name.empty()) {
         return std::nullopt;
       }
 
       collection_t collection;
-      auto status = device_enum->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &collection);
+      auto status = device_enum->EnumAudioEndpoints(eRender, state_mask, &collection);
       if (FAILED(status)) {
         BOOST_LOG(error) << "Couldn't enumerate: [0x"sv << util::hex(status).to_string_view() << ']';
 
@@ -964,7 +965,7 @@ namespace platf::audio {
 
       // Install Steam Streaming Speakers if needed. We do this during init() to ensure
       // the sink information returned includes the new Steam Streaming Speakers device.
-      if (config::audio.install_steam_drivers && !find_device_id_by_name("Steam Streaming Speakers"s)) {
+      if (config::audio.install_steam_drivers && !find_device_id_by_name("Steam Streaming Speakers"s, DEVICE_STATEMASK_ALL)) {
         // This is best effort. Don't fail if it doesn't work.
         install_steam_audio_drivers();
       }
