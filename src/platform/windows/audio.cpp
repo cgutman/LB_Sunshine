@@ -256,22 +256,18 @@ namespace platf::audio {
     return valid;
   }
 
-  device_t
-  default_device(device_enum_t &device_enum) {
-    device_t device;
-    HRESULT status;
-    status = device_enum->GetDefaultAudioEndpoint(
-      eRender,
-      eConsole,
-      &device);
+  std::array<device_t, ERole_enum_count>
+  default_devices(device_enum_t &device_enum) {
+    std::array<device_t, ERole_enum_count> devices;
 
-    if (FAILED(status)) {
-      BOOST_LOG(error) << "Couldn't get default audio endpoint [0x"sv << util::hex(status).to_string_view() << ']';
-
-      return nullptr;
+    for (int i = 0; i < devices.size(); i++) {
+      auto status = device_enum->GetDefaultAudioEndpoint(eRender, (ERole) i, &devices[i]);
+      if (FAILED(status)) {
+        BOOST_LOG(error) << "Couldn't get default audio endpoint for role "sv << i << ": [0x"sv << util::hex(status).to_string_view() << ']';
+      }
     }
 
-    return device;
+    return devices;
   }
 
   class audio_notification_t: public ::IMMNotificationClient {
@@ -401,8 +397,8 @@ namespace platf::audio {
         return -1;
       }
 
-      auto device = default_device(device_enum);
-      if (!device) {
+      auto devices = default_devices(device_enum);
+      if (!devices[eConsole]) {
         return -1;
       }
 
@@ -413,7 +409,7 @@ namespace platf::audio {
         }
 
         BOOST_LOG(debug) << "Trying audio format ["sv << format.name << ']';
-        audio_client = make_audio_client(device, format);
+        audio_client = make_audio_client(devices[eConsole], format);
 
         if (audio_client) {
           BOOST_LOG(debug) << "Found audio format ["sv << format.name << ']';
@@ -589,13 +585,13 @@ namespace platf::audio {
 
       sink_t sink;
 
-      auto device = default_device(device_enum);
-      if (!device) {
+      auto devices = default_devices(device_enum);
+      if (!devices[eConsole]) {
         return std::nullopt;
       }
 
       audio::wstring_t wstring;
-      device->GetId(&wstring);
+      devices[eConsole]->GetId(&wstring);
 
       sink.host = converter.to_bytes(wstring.get());
 
@@ -887,8 +883,8 @@ namespace platf::audio {
         return false;
       }
 
-      // Get the current default audio device (if present)
-      auto old_default_dev = default_device(device_enum);
+      // Get the current default audio devices (if present)
+      auto old_default_devs = default_devices(device_enum);
 
       // Install the Steam Streaming Speakers driver
       WCHAR driver_path[MAX_PATH] = {};
@@ -900,15 +896,12 @@ namespace platf::audio {
         // modifying the default audio device or enumerating devices again.
         Sleep(5000);
 
-        // If there was a previous default device, restore that original device as the
-        // default output device just in case installing the new one changed it.
-        if (old_default_dev) {
+        // If there were previous default devices, restore them just in case installing
+        // Steam Streaming Speakers changed the defaults.
+        for (int x = 0; x < old_default_devs.size(); ++x) {
           audio::wstring_t old_default_id;
-          old_default_dev->GetId(&old_default_id);
-
-          for (int x = 0; x < (int) ERole_enum_count; ++x) {
-            policy->SetDefaultEndpoint(old_default_id.get(), (ERole) x);
-          }
+          old_default_devs[x]->GetId(&old_default_id);
+          policy->SetDefaultEndpoint(old_default_id.get(), (ERole) x);
         }
 
         return true;
