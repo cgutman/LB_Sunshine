@@ -585,16 +585,6 @@ namespace platf::audio {
 
       sink_t sink;
 
-      auto devices = default_devices(device_enum);
-      if (!devices[eConsole]) {
-        return std::nullopt;
-      }
-
-      audio::wstring_t wstring;
-      devices[eConsole]->GetId(&wstring);
-
-      sink.host = converter.to_bytes(wstring.get());
-
       collection_t collection;
       auto status = device_enum->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &collection);
       if (FAILED(status)) {
@@ -765,33 +755,52 @@ namespace platf::audio {
       return std::make_optional(std::move(wstring_device_id));
     }
 
+    /**
+     * @brief Sets the specified sink to the default audio device.
+     * @param sink The sink name, or empty which is sink.host.
+     * @return 0 on success
+     */
     int
     set_sink(const std::string &sink) override {
-      auto wstring_device_id = set_format(sink);
-      if (!wstring_device_id) {
-        return -1;
-      }
-
       int failure {};
-      for (int x = 0; x < (int) ERole_enum_count; ++x) {
-        auto status = policy->SetDefaultEndpoint(wstring_device_id->c_str(), (ERole) x);
-        if (status) {
-          // Depending on the format of the string, we could get either of these errors
-          if (status == HRESULT_FROM_WIN32(ERROR_NOT_FOUND) || status == E_INVALIDARG) {
-            BOOST_LOG(warning) << "Audio sink not found: "sv << sink;
-          }
-          else {
-            BOOST_LOG(warning) << "Couldn't set ["sv << sink << "] to role ["sv << x << "]: 0x"sv << util::hex(status).to_string_view();
-          }
 
-          ++failure;
+      // Sink will be non-empty for virtual sink or a manual audio sink set
+      if (!sink.empty()) {
+        auto wstring_device_id = set_format(sink);
+        if (!wstring_device_id) {
+          return -1;
+        }
+
+        for (int x = 0; x < (int) ERole_enum_count; ++x) {
+          auto status = policy->SetDefaultEndpoint(wstring_device_id->c_str(), (ERole) x);
+          if (status) {
+            // Depending on the format of the string, we could get either of these errors
+            if (status == HRESULT_FROM_WIN32(ERROR_NOT_FOUND) || status == E_INVALIDARG) {
+              BOOST_LOG(warning) << "Audio sink not found: "sv << sink;
+            }
+            else {
+              BOOST_LOG(warning) << "Couldn't set ["sv << sink << "] to role ["sv << x << "]: 0x"sv << util::hex(status).to_string_view();
+            }
+
+            ++failure;
+          }
+        }
+
+        // Remember the assigned sink name, so we have it for later if we need to set it
+        // back after another application changes it
+        if (!failure) {
+          assigned_sink = sink;
         }
       }
-
-      // Remember the assigned sink name, so we have it for later if we need to set it
-      // back after another application changes it
-      if (!failure) {
-        assigned_sink = sink;
+      else {
+        // Sink will empty when we should set the existing default devices back
+        for (int x = 0; x < original_default_devices.size(); ++x) {
+          if (original_default_devices[x]) {
+            audio::wstring_t old_default_id;
+            original_default_devices[x]->GetId(&old_default_id);
+            policy->SetDefaultEndpoint(old_default_id.get(), (ERole) x);
+          }
+        }
       }
 
       return failure;
@@ -883,9 +892,6 @@ namespace platf::audio {
         return false;
       }
 
-      // Get the current default audio devices (if present)
-      auto old_default_devs = default_devices(device_enum);
-
       // Install the Steam Streaming Speakers driver
       WCHAR driver_path[MAX_PATH] = {};
       ExpandEnvironmentStringsW(STEAM_AUDIO_DRIVER_PATH, driver_path, ARRAYSIZE(driver_path));
@@ -898,10 +904,12 @@ namespace platf::audio {
 
         // If there were previous default devices, restore them just in case installing
         // Steam Streaming Speakers changed the defaults.
-        for (int x = 0; x < old_default_devs.size(); ++x) {
-          audio::wstring_t old_default_id;
-          old_default_devs[x]->GetId(&old_default_id);
-          policy->SetDefaultEndpoint(old_default_id.get(), (ERole) x);
+        for (int x = 0; x < original_default_devices.size(); ++x) {
+          if (original_default_devices[x]) {
+            audio::wstring_t old_default_id;
+            original_default_devices[x]->GetId(&old_default_id);
+            policy->SetDefaultEndpoint(old_default_id.get(), (ERole) x);
+          }
         }
 
         return true;
@@ -956,6 +964,9 @@ namespace platf::audio {
         return -1;
       }
 
+      // Remember the default devices to restore later
+      original_default_devices = default_devices(device_enum);
+
       // Install Steam Streaming Speakers if needed. We do this during init() to ensure
       // the sink information returned includes the new Steam Streaming Speakers device.
       if (config::audio.install_steam_drivers && !find_device_id_by_name("Steam Streaming Speakers"s, DEVICE_STATEMASK_ALL)) {
@@ -971,6 +982,7 @@ namespace platf::audio {
     policy_t policy;
     audio::device_enum_t device_enum;
     std::string assigned_sink;
+    std::array<device_t, ERole_enum_count> original_default_devices;
   };
 }  // namespace platf::audio
 
