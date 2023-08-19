@@ -135,21 +135,24 @@ namespace platf::dxgi {
         return platf::capture_e::reinit;
       }
 
-      // If the wait time is between 1 us and 1 second, wait the specified time
-      // and offset the next frame time from the exact current frame time target.
-      auto wait_time_us = std::chrono::duration_cast<std::chrono::microseconds>(next_frame - std::chrono::steady_clock::now()).count();
-      if (wait_time_us > 0 && wait_time_us < 1000000) {
-        LARGE_INTEGER due_time { .QuadPart = -10LL * wait_time_us };
-        SetWaitableTimer(timer, &due_time, 0, nullptr, nullptr, false);
-        WaitForSingleObject(timer, INFINITE);
-        next_frame += delay;
-      }
-      else {
-        // If the wait time is negative (meaning the frame is past due) or the
-        // computed wait time is beyond a second (meaning possible clock issues),
-        // just capture the frame now and resynchronize the frame interval with
-        // the current time.
-        next_frame = std::chrono::steady_clock::now() + delay;
+      // If this is not a self-pacing capture implementation, we'll pace it here.
+      if (!self_pacing_capture) {
+        // If the wait time is between 1 us and 1 second, wait the specified time
+        // and offset the next frame time from the exact current frame time target.
+        auto wait_time_us = std::chrono::duration_cast<std::chrono::microseconds>(next_frame - std::chrono::steady_clock::now()).count();
+        if (wait_time_us > 0 && wait_time_us < 1000000) {
+          LARGE_INTEGER due_time { .QuadPart = -10LL * wait_time_us };
+          SetWaitableTimer(timer, &due_time, 0, nullptr, nullptr, false);
+          WaitForSingleObject(timer, INFINITE);
+          next_frame += delay;
+        }
+        else {
+          // If the wait time is negative (meaning the frame is past due) or the
+          // computed wait time is beyond a second (meaning possible clock issues),
+          // just capture the frame now and resynchronize the frame interval with
+          // the current time.
+          next_frame = std::chrono::steady_clock::now() + delay;
+        }
       }
 
       std::shared_ptr<img_t> img_out;
@@ -381,7 +384,7 @@ namespace platf::dxgi {
             continue;
           }
 
-          if (desc.AttachedToDesktop && test_dxgi_duplication(adapter_tmp, output_tmp)) {
+          if (desc.AttachedToDesktop && test_capture(x, adapter_tmp, y, output_tmp)) {
             output = std::move(output_tmp);
 
             offset_x = desc.DesktopCoordinates.left;
@@ -470,21 +473,6 @@ namespace platf::dxgi {
       << "Offset             : "sv << offset_x << 'x' << offset_y << std::endl
       << "Virtual Desktop    : "sv << env_width << 'x' << env_height;
 
-    // Enable DwmFlush() only if the current refresh rate can match the client framerate.
-    auto refresh_rate = config.framerate;
-    DWM_TIMING_INFO timing_info;
-    timing_info.cbSize = sizeof(timing_info);
-
-    status = DwmGetCompositionTimingInfo(NULL, &timing_info);
-    if (FAILED(status)) {
-      BOOST_LOG(warning) << "Failed to detect active refresh rate.";
-    }
-    else {
-      refresh_rate = std::round((double) timing_info.rateRefresh.uiNumerator / (double) timing_info.rateRefresh.uiDenominator);
-    }
-
-    dup.use_dwmflush = config::video.dwmflush && !(config.framerate > refresh_rate) ? true : false;
-
     // Bump up thread priority
     {
       const DWORD flags = TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY;
@@ -549,6 +537,49 @@ namespace platf::dxgi {
       }
     }
 
+    dxgi::output6_t output6 {};
+    status = output->QueryInterface(IID_IDXGIOutput6, (void **) &output6);
+    if (SUCCEEDED(status)) {
+      DXGI_OUTPUT_DESC1 desc1;
+      output6->GetDesc1(&desc1);
+
+      BOOST_LOG(info)
+        << std::endl
+        << "Colorspace         : "sv << colorspace_to_string(desc1.ColorSpace) << std::endl
+        << "Bits Per Color     : "sv << desc1.BitsPerColor << std::endl
+        << "Red Primary        : ["sv << desc1.RedPrimary[0] << ',' << desc1.RedPrimary[1] << ']' << std::endl
+        << "Green Primary      : ["sv << desc1.GreenPrimary[0] << ',' << desc1.GreenPrimary[1] << ']' << std::endl
+        << "Blue Primary       : ["sv << desc1.BluePrimary[0] << ',' << desc1.BluePrimary[1] << ']' << std::endl
+        << "White Point        : ["sv << desc1.WhitePoint[0] << ',' << desc1.WhitePoint[1] << ']' << std::endl
+        << "Min Luminance      : "sv << desc1.MinLuminance << " nits"sv << std::endl
+        << "Max Luminance      : "sv << desc1.MaxLuminance << " nits"sv << std::endl
+        << "Max Full Luminance : "sv << desc1.MaxFullFrameLuminance << " nits"sv;
+    }
+
+    return 0;
+  }
+
+  int
+  display_ddapi_base_t::init(const ::video::config_t &config, const std::string &display_name) {
+    if (display_base_t::init(config, display_name)) {
+      return -1;
+    }
+
+    // Enable DwmFlush() only if the current refresh rate can match the client framerate.
+    auto refresh_rate = config.framerate;
+    DWM_TIMING_INFO timing_info;
+    timing_info.cbSize = sizeof(timing_info);
+
+    auto status = DwmGetCompositionTimingInfo(NULL, &timing_info);
+    if (FAILED(status)) {
+      BOOST_LOG(warning) << "Failed to detect active refresh rate.";
+    }
+    else {
+      refresh_rate = std::round((double) timing_info.rateRefresh.uiNumerator / (double) timing_info.rateRefresh.uiDenominator);
+    }
+
+    dup.use_dwmflush = config::video.dwmflush && !(config.framerate > refresh_rate) ? true : false;
+
     // FIXME: Duplicate output on RX580 in combination with DOOM (2016) --> BSOD
     {
       // IDXGIOutput5 is optional, but can provide improved performance and wide color support
@@ -610,29 +641,19 @@ namespace platf::dxgi {
     BOOST_LOG(info) << "Desktop resolution ["sv << dup_desc.ModeDesc.Width << 'x' << dup_desc.ModeDesc.Height << ']';
     BOOST_LOG(info) << "Desktop format ["sv << dxgi_format_to_string(dup_desc.ModeDesc.Format) << ']';
 
-    dxgi::output6_t output6 {};
-    status = output->QueryInterface(IID_IDXGIOutput6, (void **) &output6);
-    if (SUCCEEDED(status)) {
-      DXGI_OUTPUT_DESC1 desc1;
-      output6->GetDesc1(&desc1);
-
-      BOOST_LOG(info)
-        << std::endl
-        << "Colorspace         : "sv << colorspace_to_string(desc1.ColorSpace) << std::endl
-        << "Bits Per Color     : "sv << desc1.BitsPerColor << std::endl
-        << "Red Primary        : ["sv << desc1.RedPrimary[0] << ',' << desc1.RedPrimary[1] << ']' << std::endl
-        << "Green Primary      : ["sv << desc1.GreenPrimary[0] << ',' << desc1.GreenPrimary[1] << ']' << std::endl
-        << "Blue Primary       : ["sv << desc1.BluePrimary[0] << ',' << desc1.BluePrimary[1] << ']' << std::endl
-        << "White Point        : ["sv << desc1.WhitePoint[0] << ',' << desc1.WhitePoint[1] << ']' << std::endl
-        << "Min Luminance      : "sv << desc1.MinLuminance << " nits"sv << std::endl
-        << "Max Luminance      : "sv << desc1.MaxLuminance << " nits"sv << std::endl
-        << "Max Full Luminance : "sv << desc1.MaxFullFrameLuminance << " nits"sv;
-    }
-
     // Capture format will be determined from the first call to AcquireNextFrame()
     capture_format = DXGI_FORMAT_UNKNOWN;
 
+    // We require our own capture pacing using a timer, because Desktop Duplication API
+    // cannot be configured to return a fixed number of frames per second.
+    self_pacing_capture = false;
+
     return 0;
+  }
+
+  bool
+  display_ddapi_base_t::test_capture(int adapter_index, adapter_t &adapter, int output_index, output_t &output) {
+    return dxgi::test_dxgi_duplication(adapter, output);
   }
 
   bool
@@ -954,6 +975,7 @@ namespace platf {
           << std::endl;
 
         // Don't include the display in the list if we can't actually capture it
+        // TODO: What about displays not derived from display_ddapi_base_t?
         if (desc.AttachedToDesktop && dxgi::test_dxgi_duplication(adapter, output)) {
           display_names.emplace_back(std::move(device_name));
         }

@@ -122,6 +122,7 @@ namespace platf::dxgi {
     ~duplication_t();
   };
 
+  // Base class for DXGI displays
   class display_base_t: public display_t {
   public:
     int
@@ -137,10 +138,11 @@ namespace platf::dxgi {
     output_t output;
     device_t device;
     device_ctx_t device_ctx;
-    duplication_t dup;
 
-    DXGI_FORMAT capture_format;
     D3D_FEATURE_LEVEL feature_level;
+
+    // Must be set by init() in derived class
+    bool self_pacing_capture;
 
     typedef enum _D3DKMT_SCHEDULINGPRIORITYCLASS {
       D3DKMT_SCHEDULINGPRIORITYCLASS_IDLE,
@@ -159,15 +161,34 @@ namespace platf::dxgi {
     get_hdr_metadata(SS_HDR_METADATA &metadata) override;
 
   protected:
-    int
-    get_pixel_pitch() {
-      return (capture_format == DXGI_FORMAT_R16G16B16A16_FLOAT) ? 8 : 4;
-    }
+    virtual bool
+    test_capture(int adapter_index, adapter_t &adapter, int output_index, output_t &output) = 0;
+    virtual capture_e
+    snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor_visible) = 0;
 
     const char *
     dxgi_format_to_string(DXGI_FORMAT format);
     const char *
     colorspace_to_string(DXGI_COLOR_SPACE_TYPE type);
+  };
+
+  // Base class for DXGI displays using the Desktop Duplication API
+  class display_ddapi_base_t: public display_base_t {
+  public:
+    int
+    init(const ::video::config_t &config, const std::string &display_name);
+
+    duplication_t dup;
+    DXGI_FORMAT capture_format;
+
+  protected:
+    bool
+    test_capture(int adapter_index, adapter_t &adapter, int output_index, output_t &output) override;
+
+    int
+    get_pixel_pitch() {
+      return (capture_format == DXGI_FORMAT_R16G16B16A16_FLOAT) ? 8 : 4;
+    }
 
     virtual capture_e
     snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor_visible) = 0;
@@ -177,7 +198,7 @@ namespace platf::dxgi {
     get_supported_capture_formats() = 0;
   };
 
-  class display_ram_t: public display_base_t {
+  class display_ram_t: public display_ddapi_base_t {
   public:
     virtual capture_e
     snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor_visible) override;
@@ -202,7 +223,7 @@ namespace platf::dxgi {
     texture2d_t texture;
   };
 
-  class display_vram_t: public display_base_t, public std::enable_shared_from_this<display_vram_t> {
+  class display_vram_t: public display_ddapi_base_t, public std::enable_shared_from_this<display_vram_t> {
   public:
     virtual capture_e
     snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor_visible) override;
