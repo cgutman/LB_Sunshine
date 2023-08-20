@@ -385,6 +385,7 @@ namespace platf::dxgi {
           }
 
           if (desc.AttachedToDesktop && test_capture(x, adapter_tmp, y, output_tmp)) {
+            output_index = y;
             output = std::move(output_tmp);
 
             offset_x = desc.DesktopCoordinates.left;
@@ -400,6 +401,7 @@ namespace platf::dxgi {
         }
 
         if (output) {
+          adapter_index = x;
           adapter = std::move(adapter_tmp);
           break;
         }
@@ -647,6 +649,8 @@ namespace platf::dxgi {
     // We require our own capture pacing using a timer, because Desktop Duplication API
     // cannot be configured to return a fixed number of frames per second.
     self_pacing_capture = false;
+
+    BOOST_LOG(info) << "Using DXGI Desktop Duplication API for display capture"sv;
 
     return 0;
   }
@@ -899,6 +903,17 @@ namespace platf::dxgi {
 namespace platf {
   std::shared_ptr<display_t>
   display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config) {
+    if (hwdevice_type == mem_type_e::dxgi_amf) {
+      auto disp = std::make_shared<dxgi::display_amd_t>();
+
+      if (!disp->init(config, display_name)) {
+        return disp;
+      }
+
+      // AMD Direct Capture failed, so try regular DXGI capture now
+      hwdevice_type = mem_type_e::dxgi;
+    }
+
     if (hwdevice_type == mem_type_e::dxgi) {
       auto disp = std::make_shared<dxgi::display_vram_t>();
 

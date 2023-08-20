@@ -15,6 +15,8 @@
 #include "src/utility.h"
 #include "src/video.h"
 
+#include <AMF/core/Factory.h>
+
 namespace platf::dxgi {
   extern const char *format_str[];
 
@@ -27,6 +29,14 @@ namespace platf::dxgi {
   Release(T *dxgi) {
     dxgi->Release();
   }
+
+  inline
+  void
+  FreeLibraryHelper(void *item) {
+    FreeLibrary((HMODULE) item);
+  }
+
+  using hmodule_t = util::safe_ptr<void, FreeLibraryHelper>;
 
   using factory1_t = util::safe_ptr<IDXGIFactory1, Release<IDXGIFactory1>>;
   using dxgi_t = util::safe_ptr<IDXGIDevice, Release<IDXGIDevice>>;
@@ -138,6 +148,9 @@ namespace platf::dxgi {
     output_t output;
     device_t device;
     device_ctx_t device_ctx;
+
+    int adapter_index;
+    int output_index;
 
     D3D_FEATURE_LEVEL feature_level;
 
@@ -263,5 +276,44 @@ namespace platf::dxgi {
     std::variant<std::monostate, texture2d_t, std::shared_ptr<platf::img_t>> last_frame_variant;
 
     std::atomic<uint32_t> next_image_id;
+  };
+
+  class display_amd_t: public display_base_t, public amf::AMFSurfaceObserver, public std::enable_shared_from_this<display_amd_t> {
+    friend class amf_d3d_avcodec_encode_device_t;
+
+  public:
+    virtual capture_e
+    snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor_visible) override;
+
+    std::shared_ptr<img_t>
+    alloc_img() override;
+    int
+    dummy_img(img_t *img_base) override;
+
+    int
+    init(const ::video::config_t &config, const std::string &display_name);
+
+    std::unique_ptr<avcodec_encode_device_t>
+    make_avcodec_encode_device(pix_fmt_e pix_fmt) override;
+
+    void AMF_STD_CALL
+    OnSurfaceDataRelease(amf::AMFSurface *pSurface) override {
+      // Nothing
+    }
+
+  protected:
+    bool
+    test_capture(int adapter_index, adapter_t &adapter, int output_index, output_t &output) override;
+
+  private:
+    hmodule_t amfrt_lib;
+    amf_uint64 amf_version;
+    amf::AMFFactory *amf_factory;
+    
+    amf::AMFContextPtr context;
+    amf::AMFComponentPtr capture;
+
+    amf_int64 capture_format;
+    AMFSize resolution;
   };
 }  // namespace platf::dxgi

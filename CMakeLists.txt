@@ -176,6 +176,7 @@ if(WIN32)
             src/platform/windows/misc.cpp
             src/platform/windows/input.cpp
             src/platform/windows/display.h
+            src/platform/windows/display_amd.cpp
             src/platform/windows/display_base.cpp
             src/platform/windows/display_vram.cpp
             src/platform/windows/display_ram.cpp

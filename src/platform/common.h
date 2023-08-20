@@ -186,6 +186,7 @@ namespace platf {
     system,
     vaapi,
     dxgi,
+    dxgi_amf,
     cuda,
     unknown
   };

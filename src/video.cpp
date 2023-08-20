@@ -281,6 +281,7 @@ namespace video {
     using init_buffer_function_t = std::function<util::Either<avcodec_buffer_t, int>(platf::avcodec_encode_device_t *)>;
 
     encoder_platform_formats_avcodec(
+      const platf::mem_type_e &dev_type,
       const AVHWDeviceType &avcodec_base_dev_type,
       const AVHWDeviceType &avcodec_derived_dev_type,
       const AVPixelFormat &avcodec_dev_pix_fmt,
@@ -293,7 +294,7 @@ namespace video {
         avcodec_pix_fmt_8bit { avcodec_pix_fmt_8bit },
         avcodec_pix_fmt_10bit { avcodec_pix_fmt_10bit },
         init_avcodec_hardware_input_buffer { init_avcodec_hardware_input_buffer_function } {
-      dev_type = map_base_dev_type(avcodec_base_dev_type);
+      encoder_platform_formats_t::dev_type = dev_type;
       pix_fmt_8bit = map_pix_fmt(avcodec_pix_fmt_8bit);
       pix_fmt_10bit = map_pix_fmt(avcodec_pix_fmt_10bit);
     }
@@ -606,9 +607,11 @@ namespace video {
     "nvenc"sv,
     std::make_unique<encoder_platform_formats_avcodec>(
   #ifdef _WIN32
+      platf::mem_type_e::dxgi,
       AV_HWDEVICE_TYPE_D3D11VA, AV_HWDEVICE_TYPE_NONE,
       AV_PIX_FMT_D3D11,
   #else
+      platf::mem_type_e::cuda,
       AV_HWDEVICE_TYPE_CUDA, AV_HWDEVICE_TYPE_NONE,
       AV_PIX_FMT_CUDA,
   #endif
@@ -683,6 +686,7 @@ namespace video {
   static encoder_t quicksync {
     "quicksync"sv,
     std::make_unique<encoder_platform_formats_avcodec>(
+      platf::mem_type_e::dxgi,
       AV_HWDEVICE_TYPE_D3D11VA, AV_HWDEVICE_TYPE_QSV,
       AV_PIX_FMT_QSV,
       AV_PIX_FMT_NV12, AV_PIX_FMT_P010,
@@ -753,6 +757,7 @@ namespace video {
   static encoder_t amdvce {
     "amdvce"sv,
     std::make_unique<encoder_platform_formats_avcodec>(
+      platf::mem_type_e::dxgi_amf,
       AV_HWDEVICE_TYPE_D3D11VA, AV_HWDEVICE_TYPE_NONE,
       AV_PIX_FMT_D3D11,
       AV_PIX_FMT_NV12, AV_PIX_FMT_P010,
@@ -815,6 +820,7 @@ namespace video {
   static encoder_t software {
     "software"sv,
     std::make_unique<encoder_platform_formats_avcodec>(
+      platf::mem_type_e::system,
       AV_HWDEVICE_TYPE_NONE, AV_HWDEVICE_TYPE_NONE,
       AV_PIX_FMT_NONE,
       AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV420P10,
@@ -875,6 +881,7 @@ namespace video {
   static encoder_t vaapi {
     "vaapi"sv,
     std::make_unique<encoder_platform_formats_avcodec>(
+      platf::mem_type_e::vaapi,
       AV_HWDEVICE_TYPE_VAAPI, AV_HWDEVICE_TYPE_NONE,
       AV_PIX_FMT_VAAPI,
       AV_PIX_FMT_NV12, AV_PIX_FMT_YUV420P10,
@@ -922,6 +929,7 @@ namespace video {
   static encoder_t videotoolbox {
     "videotoolbox"sv,
     std::make_unique<encoder_platform_formats_avcodec>(
+      platf::mem_type_e::system,
       AV_HWDEVICE_TYPE_NONE, AV_HWDEVICE_TYPE_NONE,
       AV_PIX_FMT_VIDEOTOOLBOX,
       AV_PIX_FMT_NV12, AV_PIX_FMT_NV12,

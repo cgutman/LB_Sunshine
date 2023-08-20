@@ -23,8 +23,6 @@ extern "C" {
 #include "src/nvenc/nvenc_utils.h"
 #include "src/video.h"
 
-#include <AMF/core/Factory.h>
-
 #define SUNSHINE_SHADERS_DIR SUNSHINE_ASSETS_DIR "/shaders/directx"
 namespace platf {
   using namespace std::literals;
