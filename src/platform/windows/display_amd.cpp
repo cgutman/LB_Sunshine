@@ -414,6 +414,13 @@ namespace platf::dxgi {
       return -1;
     }
 
+    // FIXME: Don't use Direct Capture for a SDR P010 stream. The output is very dim.
+    // This seems like a possible bug in VideoConverter when upconverting 8-bit to 10-bit.
+    if (config.dynamicRange && !is_hdr()) {
+      BOOST_LOG(info) << "AMD Direct Capture is disabled while 10-bit stream is in SDR mode"sv;
+      return -1;
+    }
+
     // Create the capture context
     result = amf_factory->CreateContext(&context);
     if (result != AMF_OK) {
