@@ -202,8 +202,20 @@ namespace platf::dxgi {
     // Poll for the next frame
     amf::AMFSurfacePtr output;
     AMF_RESULT result;
+    auto capture_start = std::chrono::steady_clock::now();
     do {
       result = capture->QueryOutput((amf::AMFData **) &output);
+      if (result == AMF_REPEAT) {
+        // Check for display configuration change
+        if (!factory->IsCurrent()) {
+          return platf::capture_e::reinit;
+        }
+
+        // Check for capture timeout expiration
+        if (std::chrono::steady_clock::now() - capture_start >= timeout) {
+          return platf::capture_e::timeout;
+        }
+      }
     } while (result == AMF_REPEAT);
     if (result != AMF_OK) {
       BOOST_LOG(error) << "DisplayCapture::QueryOutput() failed: "sv << result;
