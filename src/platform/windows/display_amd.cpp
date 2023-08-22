@@ -58,11 +58,66 @@ namespace platf::dxgi {
     init(std::shared_ptr<platf::display_t> display, pix_fmt_e pix_fmt) {
       this->display = std::static_pointer_cast<display_amd_t>(display);
 
-      // Share the ID3D11Device object with the capture pipeline
-      this->data = this->display->device.get();
+      D3D_FEATURE_LEVEL featureLevels[] {
+        D3D_FEATURE_LEVEL_11_1,
+        D3D_FEATURE_LEVEL_11_0,
+        D3D_FEATURE_LEVEL_10_1,
+        D3D_FEATURE_LEVEL_10_0,
+        D3D_FEATURE_LEVEL_9_3,
+        D3D_FEATURE_LEVEL_9_2,
+        D3D_FEATURE_LEVEL_9_1
+      };
 
-      // Create the VideoConverter component
-      auto result = this->display->amf_factory->CreateComponent(this->display->context, AMFVideoConverter, &converter);
+      // Create a new ID3D11 device to allow parallel encoding
+      auto status = D3D11CreateDevice(
+        this->display->adapter.get(),
+        D3D_DRIVER_TYPE_UNKNOWN,
+        nullptr,
+        D3D11_CREATE_DEVICE_FLAGS,
+        featureLevels, sizeof(featureLevels) / sizeof(D3D_FEATURE_LEVEL),
+        D3D11_SDK_VERSION,
+        &encode_device,
+        nullptr,
+        nullptr);
+      if (FAILED(status)) {
+        BOOST_LOG(error) << "Failed to create D3D11 device for AMF encoder [0x"sv << util::hex(status).to_string_view() << ']';
+        return -1;
+      }
+
+      {
+        dxgi::dxgi_t dxgi;
+        status = encode_device->QueryInterface(IID_IDXGIDevice, (void **) &dxgi);
+        if (FAILED(status)) {
+          BOOST_LOG(warning) << "Failed to query DXGI interface from device [0x"sv << util::hex(status).to_string_view() << ']';
+          return -1;
+        }
+
+        status = dxgi->SetGPUThreadPriority(7);
+        if (FAILED(status)) {
+          BOOST_LOG(warning) << "Failed to increase encoding GPU thread priority. Please run application as administrator for optimal performance.";
+        }
+      }
+
+      // Use the new ID3D11 device for encoding
+      this->data = encode_device.get();
+
+      // Create the encoding context
+      auto result = this->display->amf_factory->CreateContext(&encode_context);
+      if (result != AMF_OK) {
+        BOOST_LOG(error) << "CreateContext() failed: "sv << result;
+        return -1;
+      }
+
+      // Associate the encode context with the encoding device.
+      // This will enable multithread protection on the device.
+      result = encode_context->InitDX11(encode_device.get());
+      if (result != AMF_OK) {
+        BOOST_LOG(error) << "InitDX11() failed: "sv << result;
+        return -1;
+      }
+
+      // Create the VideoConverter component using the capture context
+      result = this->display->amf_factory->CreateComponent(this->display->context, AMFVideoConverter, &converter);
       if (result != AMF_OK) {
         BOOST_LOG(error) << "CreateComponent(VideoConverter) failed: "sv << result;
         return -1;
@@ -103,14 +158,9 @@ namespace platf::dxgi {
         return -1;
       }
 
-      // Wait for the converted output YUV frame
+      // Get the converted output YUV frame. We expect this to block until the output is available.
       amf::AMFSurfacePtr output;
-      do {
-        result = converter->QueryOutput((amf::AMFData **) &output);
-        if (result == AMF_REPEAT) {
-          Sleep(1);
-        }
-      } while (result == AMF_REPEAT);
+      result = converter->QueryOutput((amf::AMFData **) &output);
       if (result != AMF_OK) {
         BOOST_LOG(error) << "VideoConverter::QueryOutput() failed: "sv << result;
         return -1;
@@ -178,8 +228,8 @@ namespace platf::dxgi {
         }
       }
 
-      // Wrap the frame's ID3D11Texture2D in an AMFSurface object
-      auto result = display->context->CreateSurfaceFromDX11Native(frame->data[0], &hwframe_surface, this);
+      // Wrap the frame's ID3D11Texture2D in an AMFSurface object using the encoding AMF context
+      auto result = encode_context->CreateSurfaceFromDX11Native(frame->data[0], &hwframe_surface, this);
       if (result != AMF_OK) {
         BOOST_LOG(error) << "CreateSurfaceFromDX11Native() failed: "sv << result;
         return -1;
@@ -196,9 +246,11 @@ namespace platf::dxgi {
 
   private:
     std::shared_ptr<display_amd_t> display;
-    amf::AMFComponentPtr converter;
+    amf::AMFComponentPtr converter; // Associated with display->context
+    device_t encode_device;
+    amf::AMFContextPtr encode_context;
     frame_t hwframe;
-    amf::AMFSurfacePtr hwframe_surface;
+    amf::AMFSurfacePtr hwframe_surface; // Associated with encode_context
     amf::AMF_SURFACE_FORMAT last_input_format = amf::AMF_SURFACE_UNKNOWN;
   };
 
@@ -209,9 +261,6 @@ namespace platf::dxgi {
     AMF_RESULT result;
     do {
       result = capture->QueryOutput((amf::AMFData **) &output);
-      if (result == AMF_REPEAT) {
-        Sleep(1);
-      }
     } while (result == AMF_REPEAT);
     if (result != AMF_OK) {
       BOOST_LOG(error) << "DisplayCapture::QueryOutput() failed: "sv << result;
@@ -276,19 +325,6 @@ namespace platf::dxgi {
       return false;
     }
 
-    // AMF requires a multithread-safe ID3D11Device
-    {
-      multithread_t mt;
-
-      auto status = device->QueryInterface(IID_ID3D11Multithread, (void **) &mt);
-      if (FAILED(status)) {
-        BOOST_LOG(warning) << "Failed to query ID3D11Multithread interface from device [0x"sv << util::hex(status).to_string_view() << ']';
-        return false;
-      }
-
-      mt->SetMultithreadProtected(TRUE);
-    }
-
     // Associate the context with our ID3D11Device
     result = context->InitDX11(device.get());
     if (result != AMF_OK) {
@@ -306,6 +342,7 @@ namespace platf::dxgi {
 
     // Capture the specified output
     capture->SetProperty(AMF_DISPLAYCAPTURE_MONITOR_INDEX, output_index);
+    capture->SetProperty(AMF_DISPLAYCAPTURE_MODE, AMF_DISPLAYCAPTURE_MODE_GET_CURRENT_SURFACE);
 
     // Initialize capture
     result = capture->Init(amf::AMF_SURFACE_UNKNOWN, 0, 0);
@@ -377,27 +414,14 @@ namespace platf::dxgi {
       return -1;
     }
 
-    // Initialize the capture context
+    // Create the capture context
     result = amf_factory->CreateContext(&context);
     if (result != AMF_OK) {
       BOOST_LOG(error) << "CreateContext() failed: "sv << result;
       return -1;
     }
 
-    // AMF requires a multithread-safe ID3D11Device
-    {
-      multithread_t mt;
-
-      auto status = device->QueryInterface(IID_ID3D11Multithread, (void **) &mt);
-      if (FAILED(status)) {
-        BOOST_LOG(warning) << "Failed to query ID3D11Multithread interface from device [0x"sv << util::hex(status).to_string_view() << ']';
-        return -1;
-      }
-
-      mt->SetMultithreadProtected(TRUE);
-    }
-
-    // Associate the context with our ID3D11Device
+    // Associate the context with our ID3D11Device. This will enable multithread protection on the device.
     result = context->InitDX11(device.get());
     if (result != AMF_OK) {
       BOOST_LOG(error) << "InitDX11() failed: "sv << result;
@@ -411,10 +435,9 @@ namespace platf::dxgi {
       return -1;
     }
 
-    // Set parameters for fixed rate capture
+    // Set parameters for non-blocking capture
     capture->SetProperty(AMF_DISPLAYCAPTURE_MONITOR_INDEX, output_index);
-    capture->SetProperty(AMF_DISPLAYCAPTURE_MODE, AMF_DISPLAYCAPTURE_MODE_KEEP_FRAMERATE);
-    capture->SetProperty(AMF_DISPLAYCAPTURE_FRAMERATE, AMFConstructRate(config.framerate, 1));
+    capture->SetProperty(AMF_DISPLAYCAPTURE_MODE, AMF_DISPLAYCAPTURE_MODE_GET_CURRENT_SURFACE);
 
     // Initialize capture
     result = capture->Init(amf::AMF_SURFACE_UNKNOWN, 0, 0);
@@ -429,8 +452,8 @@ namespace platf::dxgi {
     BOOST_LOG(info) << "Desktop resolution ["sv << resolution.width << 'x' << resolution.height << ']';
     BOOST_LOG(info) << "Desktop format ["sv << capture_format << ']';
 
-    // Direct Capture allows fixed rate capture, so we don't need the base class to pace us
-    self_pacing_capture = true;
+    // Direct Capture allows fixed rate capture, but the pacing is quite bad. We prefer our own pacing instead.
+    self_pacing_capture = false;
 
     BOOST_LOG(info) << "Using AMD Direct Capture API for display capture"sv;
     return 0;
