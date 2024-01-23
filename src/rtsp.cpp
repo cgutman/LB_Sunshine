@@ -833,19 +833,42 @@ namespace rtsp_stream {
 
     // Check that any required encryption is enabled
     auto nettype = net::from_address(sock.remote_endpoint().address().to_string());
-    int encryption_mode;
-    if (nettype == net::net_e::PC || nettype == net::net_e::LAN) {
-      encryption_mode = config::stream.lan_encryption_mode;
+    int encryption_mode = (nettype == net::net_e::PC || nettype == net::net_e::LAN) ?
+                            config::stream.lan_encryption_mode :
+                            config::stream.wan_encryption_mode;
+
+    int required_encryption_flags;
+    if (encryption_mode == config::ENCRYPTION_MODE_MANDATORY) {
+      // Mandatory encryption requires encryption for all streams
+      required_encryption_flags = SS_ENC_VIDEO | SS_ENC_AUDIO | SS_ENC_CONTROL_V2;
+    }
+    else if (launch_session->corever >= 0) {
+      // All clients reporting core version 0 or higher must use new control encryption
+      required_encryption_flags = SS_ENC_CONTROL_V2;
     }
     else {
-      encryption_mode = config::stream.wan_encryption_mode;
+      required_encryption_flags = 0;
     }
-    if (encryption_mode == config::ENCRYPTION_MODE_MANDATORY &&
-        (config.encryptionFlagsEnabled & (SS_ENC_VIDEO | SS_ENC_AUDIO)) != (SS_ENC_VIDEO | SS_ENC_AUDIO)) {
-      BOOST_LOG(error) << "Rejecting client that cannot comply with mandatory encryption requirement"sv;
+
+    if ((config.encryptionFlagsEnabled & required_encryption_flags) != required_encryption_flags) {
+      BOOST_LOG(error) << "Rejecting client that cannot comply with encryption requirement"sv;
 
       respond(sock, &option, 403, "Forbidden", req->sequenceNumber, {});
       return;
+    }
+
+    // Control stream encryption v2 requires the fully encrypted control protocol type
+    if ((config.encryptionFlagsEnabled & SS_ENC_CONTROL_V2) && config.controlProtocolType != 13) {
+      BOOST_LOG(error) << "Client requested incompatible control stream protocol type"sv;
+
+      respond(sock, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
+      return;
+    }
+
+    // Control stream encryption v2 implies core generation 0 or later
+    if (launch_session->corever < 0 && (config.encryptionFlagsEnabled & SS_ENC_CONTROL_V2)) {
+      BOOST_LOG(warning) << "Client requested control stream v2 encryption but didn't set the client core version properly!"sv;
+      BOOST_LOG(warning) << "The client code needs to be updated to use LiGetLaunchUrlQueryParameters()"sv;
     }
 
     auto session = stream::session::alloc(config, *launch_session);

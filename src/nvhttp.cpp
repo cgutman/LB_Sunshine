@@ -291,6 +291,7 @@ namespace nvhttp {
     launch_session.surround_info = util::from_view(get_arg(args, "surroundAudioInfo", "196610"));
     launch_session.gcmap = util::from_view(get_arg(args, "gcmap", "0"));
     launch_session.enable_hdr = util::from_view(get_arg(args, "hdrMode", "0"));
+    launch_session.corever = util::from_view(get_arg(args, "corever", "-1"));
 
     // Generate the unique identifiers for this connection that we will send later during RTSP handshake
     unsigned char raw_payload[8];

@@ -29,6 +29,10 @@ namespace rtsp_stream {
     int surround_info;
     bool enable_hdr;
     bool enable_sops;
+
+    // Client core generation
+    // 0 = Control stream v2 and video encryption support
+    int corever;
   };
 
   void
