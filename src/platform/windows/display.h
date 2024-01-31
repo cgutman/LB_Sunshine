@@ -33,7 +33,9 @@ namespace platf::dxgi {
   using dxgi1_t = util::safe_ptr<IDXGIDevice1, Release<IDXGIDevice1>>;
   using device_t = util::safe_ptr<ID3D11Device, Release<ID3D11Device>>;
   using device1_t = util::safe_ptr<ID3D11Device1, Release<ID3D11Device1>>;
+  using device5_t = util::safe_ptr<ID3D11Device5, Release<ID3D11Device5>>;
   using device_ctx_t = util::safe_ptr<ID3D11DeviceContext, Release<ID3D11DeviceContext>>;
+  using device_ctx4_t = util::safe_ptr<ID3D11DeviceContext4, Release<ID3D11DeviceContext4>>;
   using adapter_t = util::safe_ptr<IDXGIAdapter1, Release<IDXGIAdapter1>>;
   using output_t = util::safe_ptr<IDXGIOutput, Release<IDXGIOutput>>;
   using output1_t = util::safe_ptr<IDXGIOutput1, Release<IDXGIOutput1>>;
@@ -58,6 +60,7 @@ namespace platf::dxgi {
   using depth_stencil_state_t = util::safe_ptr<ID3D11DepthStencilState, Release<ID3D11DepthStencilState>>;
   using depth_stencil_view_t = util::safe_ptr<ID3D11DepthStencilView, Release<ID3D11DepthStencilView>>;
   using keyed_mutex_t = util::safe_ptr<IDXGIKeyedMutex, Release<IDXGIKeyedMutex>>;
+  using fence_t = util::safe_ptr<ID3D11Fence, Release<ID3D11Fence>>;
 
   namespace video {
     using device_t = util::safe_ptr<ID3D11VideoDevice, Release<ID3D11VideoDevice>>;
@@ -322,6 +325,9 @@ namespace platf::dxgi {
 
     std::unique_ptr<nvenc_encode_device_t>
     make_nvenc_encode_device(pix_fmt_e pix_fmt) override;
+
+    device5_t device5;
+    device_ctx4_t device_ctx4;
 
     sampler_state_t sampler_linear;
 

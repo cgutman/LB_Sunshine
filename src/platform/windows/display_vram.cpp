@@ -118,10 +118,15 @@ namespace platf::dxgi {
     // These objects are owned by the display_t's ID3D11Device
     texture2d_t capture_texture;
     render_target_t capture_rt;
+
+    // The fence is used if supported, otherwise we use the keyed mutex
+    fence_t capture_fence;
+    UINT64 fence_value;
     keyed_mutex_t capture_mutex;
 
-    // This is the shared handle used by hwdevice_t to open capture_texture
+    // This is the shared handle used by hwdevice_t to open capture_texture and capture_fence
     HANDLE encoder_texture_handle = {};
+    HANDLE encoder_fence_handle = {};
 
     // Set to true if the image corresponds to a dummy texture used prior to
     // the first successful capture of a desktop frame
@@ -137,52 +142,86 @@ namespace platf::dxgi {
       if (encoder_texture_handle) {
         CloseHandle(encoder_texture_handle);
       }
+      if (encoder_fence_handle) {
+        CloseHandle(encoder_fence_handle);
+      }
     };
   };
 
-  struct texture_lock_helper {
-    keyed_mutex_t _mutex;
+  struct image_sync_helper {
+    // The user of this object is expected to ensure the lifetime of these objects
+    ID3D11DeviceContext4 *_ctx4;
+    img_d3d_t *_img;
+
     bool _locked = false;
 
-    texture_lock_helper(const texture_lock_helper &) = delete;
-    texture_lock_helper &
-    operator=(const texture_lock_helper &) = delete;
+    image_sync_helper(const image_sync_helper &) = delete;
+    image_sync_helper &
+    operator=(const image_sync_helper &) = delete;
 
-    texture_lock_helper(texture_lock_helper &&other) {
-      _mutex.reset(other._mutex.release());
+    image_sync_helper(image_sync_helper &&other) {
+      _ctx4 = other._ctx4;
+      _img = other._img;
       _locked = other._locked;
       other._locked = false;
     }
 
-    texture_lock_helper &
-    operator=(texture_lock_helper &&other) {
-      if (_locked) _mutex->ReleaseSync(0);
-      _mutex.reset(other._mutex.release());
+    image_sync_helper &
+    operator=(image_sync_helper &&other) {
+      unlock();
+      _ctx4 = other._ctx4;
+      _img = other._img;
       _locked = other._locked;
       other._locked = false;
       return *this;
     }
 
-    texture_lock_helper(IDXGIKeyedMutex *mutex):
-        _mutex(mutex) {
-      if (_mutex) _mutex->AddRef();
-    }
+    image_sync_helper(std::nullptr_t):
+        _ctx4(nullptr), _img(nullptr) {}
 
-    ~texture_lock_helper() {
-      if (_locked) _mutex->ReleaseSync(0);
+    image_sync_helper(ID3D11DeviceContext4 *ctx4, img_d3d_t *img):
+        _ctx4(ctx4), _img(img) {}
+
+    ~image_sync_helper() {
+      unlock();
     }
 
     bool
     lock() {
       if (_locked) return true;
-      HRESULT status = _mutex->AcquireSync(0, INFINITE);
-      if (status == S_OK) {
-        _locked = true;
+
+      // Use fences if supported, otherwise use keyed mutexes
+      if (_ctx4) {
+        auto status = _ctx4->Wait(_img->capture_fence.get(), _img->fence_value);
+        if (status != S_OK) {
+          BOOST_LOG(error) << "Failed to wait for fence [0x"sv << util::hex(status).to_string_view() << ']';
+          return false;
+        }
       }
       else {
-        BOOST_LOG(error) << "Failed to acquire texture mutex [0x"sv << util::hex(status).to_string_view() << ']';
+        auto status = _img->capture_mutex->AcquireSync(0, INFINITE);
+        if (status != S_OK) {
+          BOOST_LOG(error) << "Failed to acquire texture mutex [0x"sv << util::hex(status).to_string_view() << ']';
+          return false;
+        }
       }
-      return _locked;
+
+      _locked = true;
+      return true;
+    }
+
+    void
+    unlock() {
+      if (!_locked) return;
+
+      if (_ctx4) {
+        _ctx4->Signal(_img->capture_fence.get(), ++_img->fence_value);
+      }
+      else {
+        _img->capture_mutex->ReleaseSync(0);
+      }
+
+      _locked = false;
     }
   };
 
@@ -392,11 +431,21 @@ namespace platf::dxgi {
         return -1;
       }
 
-      // Acquire encoder mutex to synchronize with capture code
-      auto status = img_ctx.encoder_mutex->AcquireSync(0, INFINITE);
-      if (status != S_OK) {
-        BOOST_LOG(error) << "Failed to acquire encoder mutex [0x"sv << util::hex(status).to_string_view() << ']';
-        return -1;
+      if (device5) {
+        // Queue a GPU wait on the encoder fence to ensure all writes have completed
+        auto status = device_ctx4->Wait(img_ctx.encoder_fence.get(), img.fence_value);
+        if (status != S_OK) {
+          BOOST_LOG(error) << "Failed to acquire encoder mutex [0x"sv << util::hex(status).to_string_view() << ']';
+          return -1;
+        }
+      }
+      else {
+        // Acquire encoder mutex to synchronize with capture code
+        auto status = img_ctx.encoder_mutex->AcquireSync(0, INFINITE);
+        if (status != S_OK) {
+          BOOST_LOG(error) << "Failed to acquire encoder mutex [0x"sv << util::hex(status).to_string_view() << ']';
+          return -1;
+        }
       }
 
       device_ctx->OMSetRenderTargets(1, &nv12_Y_rt, nullptr);
@@ -412,8 +461,14 @@ namespace platf::dxgi {
       device_ctx->RSSetViewports(1, &outUV_view);
       device_ctx->Draw(3, 0);
 
-      // Release encoder mutex to allow capture code to reuse this image
-      img_ctx.encoder_mutex->ReleaseSync(0);
+      if (device5) {
+        // Signal the fence to let the capture code know it's safe to write again
+        device_ctx4->Signal(img_ctx.encoder_fence.get(), ++img.fence_value);
+      }
+      else {
+        // Release encoder mutex to allow capture code to reuse this image
+        img_ctx.encoder_mutex->ReleaseSync(0);
+      }
 
       ID3D11ShaderResourceView *emptyShaderResourceView = nullptr;
       device_ctx->PSSetShaderResources(0, 1, &emptyShaderResourceView);
@@ -547,6 +602,16 @@ namespace platf::dxgi {
         return -1;
       }
 
+      status = device->QueryInterface(IID_ID3D11Device5, (void **) &device5);
+      if (SUCCEEDED(status)) {
+        // This is guaranteed to be supported if ID3D11Device5 is supported
+        device_ctx->QueryInterface(IID_ID3D11DeviceContext4, (void **) &device_ctx4);
+      }
+      else {
+        BOOST_LOG(warning) << "D3D11 fences are not supported on this OS version"sv;
+        device5.release();
+      }
+
       status = dxgi->SetGPUThreadPriority(7);
       if (FAILED(status)) {
         BOOST_LOG(warning) << "Failed to increase encoding GPU thread priority. Please run application as administrator for optimal performance.";
@@ -661,6 +726,9 @@ namespace platf::dxgi {
 
       texture2d_t encoder_texture;
       shader_res_t encoder_input_res;
+
+      // The fence is used when supported, otherwise we have to use the keyed mutex
+      fence_t encoder_fence;
       keyed_mutex_t encoder_mutex;
 
       std::weak_ptr<const platf::img_t> img_weak;
@@ -670,6 +738,7 @@ namespace platf::dxgi {
         capture_texture_p = nullptr;
         encoder_texture.reset();
         encoder_input_res.reset();
+        encoder_fence.reset();
         encoder_mutex.reset();
         img_weak.reset();
       }
@@ -700,11 +769,21 @@ namespace platf::dxgi {
         return -1;
       }
 
-      // Get the keyed mutex to synchronize with the capture code
-      status = img_ctx.encoder_texture->QueryInterface(__uuidof(IDXGIKeyedMutex), (void **) &img_ctx.encoder_mutex);
-      if (FAILED(status)) {
-        BOOST_LOG(error) << "Failed to query IDXGIKeyedMutex [0x"sv << util::hex(status).to_string_view() << ']';
-        return -1;
+      // If this device supports fences, let's use them instead of keyed mutexes
+      if (device5) {
+        status = device5->OpenSharedFence(img.encoder_fence_handle, __uuidof(ID3D11Fence), (void **) &img_ctx.encoder_fence);
+        if (FAILED(status)) {
+          BOOST_LOG(error) << "Failed to open shared image fence [0x"sv << util::hex(status).to_string_view() << ']';
+          return -1;
+        }
+      }
+      else {
+        // Get the keyed mutex to synchronize with the capture code
+        status = img_ctx.encoder_texture->QueryInterface(__uuidof(IDXGIKeyedMutex), (void **) &img_ctx.encoder_mutex);
+        if (FAILED(status)) {
+          BOOST_LOG(error) << "Failed to query IDXGIKeyedMutex [0x"sv << util::hex(status).to_string_view() << ']';
+          return -1;
+        }
       }
 
       // Create the SRV for the encoder texture
@@ -754,6 +833,10 @@ namespace platf::dxgi {
 
     device_t device;
     device_ctx_t device_ctx;
+
+    // Populated only if DirectX 11.4 is supported
+    device5_t device5;
+    device_ctx4_t device_ctx4;
 
     texture2d_t output_texture;
   };
@@ -1132,22 +1215,20 @@ namespace platf::dxgi {
       return true;
     };
 
-    auto get_locked_d3d_img = [&](std::shared_ptr<platf::img_t> &img, bool dummy = false) -> std::tuple<std::shared_ptr<img_d3d_t>, texture_lock_helper> {
+    auto get_synchronized_d3d_img = [&](std::shared_ptr<platf::img_t> &img, bool dummy = false) -> std::tuple<std::shared_ptr<img_d3d_t>, image_sync_helper> {
       auto d3d_img = std::static_pointer_cast<img_d3d_t>(img);
 
       // Finish creating the image (if it hasn't happened already),
       // also creates synchronization primitives for shared access from multiple direct3d devices.
       if (complete_img(d3d_img.get(), dummy)) return { nullptr, nullptr };
 
-      // This image is shared between capture direct3d device and encoders direct3d devices,
-      // we must acquire lock before doing anything to it.
-      texture_lock_helper lock_helper(d3d_img->capture_mutex.get());
-      if (!lock_helper.lock()) {
+      image_sync_helper sync_helper(device_ctx4.get(), d3d_img.get());
+      if (!sync_helper.lock()) {
         BOOST_LOG(error) << "Failed to lock capture texture";
         return { nullptr, nullptr };
       }
 
-      return { std::move(d3d_img), std::move(lock_helper) };
+      return std::tuple { std::move(d3d_img), std::move(sync_helper) };
     };
 
     switch (last_frame_action) {
@@ -1165,7 +1246,7 @@ namespace platf::dxgi {
         std::shared_ptr<platf::img_t> img;
         if (!pull_free_image_cb(img)) return capture_e::interrupted;
 
-        auto [d3d_img, lock] = get_locked_d3d_img(img);
+        auto [d3d_img, lock] = get_synchronized_d3d_img(img);
         if (!d3d_img) return capture_e::error;
 
         device_ctx->CopyResource(d3d_img->capture_texture.get(), p_surface->get());
@@ -1184,7 +1265,7 @@ namespace platf::dxgi {
           BOOST_LOG(error) << "Logical error at " << __FILE__ << ":" << __LINE__;
           return capture_e::error;
         }
-        auto [d3d_img, lock] = get_locked_d3d_img(*p_img);
+        auto [d3d_img, lock] = get_synchronized_d3d_img(*p_img);
         if (!d3d_img) return capture_e::error;
 
         p_img = nullptr;
@@ -1202,7 +1283,7 @@ namespace platf::dxgi {
         std::shared_ptr<platf::img_t> img;
         if (!pull_free_image_cb(img)) return capture_e::interrupted;
 
-        auto [d3d_img, lock] = get_locked_d3d_img(img);
+        auto [d3d_img, lock] = get_synchronized_d3d_img(img);
         if (!d3d_img) return capture_e::error;
 
         device_ctx->CopyResource(d3d_img->capture_texture.get(), src.get());
@@ -1278,7 +1359,7 @@ namespace platf::dxgi {
 
         if (!pull_free_image_cb(img_out)) return capture_e::interrupted;
 
-        auto [d3d_img, lock] = get_locked_d3d_img(img_out);
+        auto [d3d_img, lock] = get_synchronized_d3d_img(img_out);
         if (!d3d_img) return capture_e::error;
 
         device_ctx->CopyResource(d3d_img->capture_texture.get(), p_surface->get());
@@ -1294,7 +1375,7 @@ namespace platf::dxgi {
         auto old_d3d_img = (img_d3d_t *) img_out.get();
         bool reclear_dummy = old_d3d_img->dummy && old_d3d_img->capture_texture;
 
-        auto [d3d_img, lock] = get_locked_d3d_img(img_out, true);
+        auto [d3d_img, lock] = get_synchronized_d3d_img(img_out, true);
         if (!d3d_img) return capture_e::error;
 
         if (reclear_dummy) {
@@ -1329,6 +1410,15 @@ namespace platf::dxgi {
       return -1;
     }
 
+    auto status = device->QueryInterface(IID_ID3D11Device5, (void **) &device5);
+    if (SUCCEEDED(status)) {
+      // This is guaranteed to be supported if ID3D11Device5 is supported
+      device_ctx->QueryInterface(IID_ID3D11DeviceContext4, (void **) &device_ctx4);
+    }
+    else {
+      device5.release();
+    }
+
     D3D11_SAMPLER_DESC sampler_desc {};
     sampler_desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
     sampler_desc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
@@ -1338,7 +1428,7 @@ namespace platf::dxgi {
     sampler_desc.MinLOD = 0;
     sampler_desc.MaxLOD = D3D11_FLOAT32_MAX;
 
-    auto status = device->CreateSamplerState(&sampler_desc, &sampler_linear);
+    status = device->CreateSamplerState(&sampler_desc, &sampler_linear);
     if (FAILED(status)) {
       BOOST_LOG(error) << "Failed to create point sampler state [0x"sv << util::hex(status).to_string_view() << ']';
       return -1;
@@ -1435,11 +1525,17 @@ namespace platf::dxgi {
     // Reset the image (in case this was previously a dummy)
     img->capture_texture.reset();
     img->capture_rt.reset();
+    img->capture_fence.reset();
     img->capture_mutex.reset();
+    img->fence_value = 0;
     img->data = nullptr;
     if (img->encoder_texture_handle) {
       CloseHandle(img->encoder_texture_handle);
       img->encoder_texture_handle = NULL;
+    }
+    if (img->encoder_fence_handle) {
+      CloseHandle(img->encoder_fence_handle);
+      img->encoder_fence_handle = NULL;
     }
 
     // Initialize format-dependent fields
@@ -1457,7 +1553,7 @@ namespace platf::dxgi {
     t.Usage = D3D11_USAGE_DEFAULT;
     t.Format = img->format;
     t.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
-    t.MiscFlags = D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+    t.MiscFlags = D3D11_RESOURCE_MISC_SHARED_NTHANDLE | (device5 ? D3D11_RESOURCE_MISC_SHARED : D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX);
 
     HRESULT status;
     if (dummy) {
@@ -1484,11 +1580,27 @@ namespace platf::dxgi {
       return -1;
     }
 
-    // Get the keyed mutex to synchronize with the encoding code
-    status = img->capture_texture->QueryInterface(__uuidof(IDXGIKeyedMutex), (void **) &img->capture_mutex);
-    if (FAILED(status)) {
-      BOOST_LOG(error) << "Failed to query IDXGIKeyedMutex [0x"sv << util::hex(status).to_string_view() << ']';
-      return -1;
+    // If supported, create a fence to synchronize with the encoding code
+    if (device5) {
+      status = device5->CreateFence(0, D3D11_FENCE_FLAG_SHARED, __uuidof(ID3D11Fence), (void **) &img->capture_fence);
+      if (FAILED(status)) {
+        BOOST_LOG(error) << "Failed to create fence [0x"sv << util::hex(status).to_string_view() << ']';
+        return -1;
+      }
+
+      status = img->capture_fence->CreateSharedHandle(nullptr, GENERIC_ALL, nullptr, &img->encoder_fence_handle);
+      if (FAILED(status)) {
+        BOOST_LOG(error) << "Failed to create shared fence handle [0x"sv << util::hex(status).to_string_view() << ']';
+        return -1;
+      }
+    }
+    else {
+      // Get the keyed mutex to synchronize with the encoding code
+      status = img->capture_texture->QueryInterface(__uuidof(IDXGIKeyedMutex), (void **) &img->capture_mutex);
+      if (FAILED(status)) {
+        BOOST_LOG(error) << "Failed to query IDXGIKeyedMutex [0x"sv << util::hex(status).to_string_view() << ']';
+        return -1;
+      }
     }
 
     resource1_t resource;
