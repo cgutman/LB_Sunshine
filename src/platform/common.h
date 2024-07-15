@@ -607,8 +607,11 @@ namespace platf {
   restart();
 
   struct batched_send_info_t {
-    const char *buffer;
-    size_t block_size;
+    const char *headers;
+    size_t header_size;
+    const char *payloads;
+    size_t payload_size;
+
     size_t block_count;
 
     std::uintptr_t native_socket;

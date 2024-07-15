@@ -1452,12 +1452,28 @@ namespace platf {
       msg.namelen = sizeof(taddr_v4);
     }
 
-    WSABUF buf;
-    buf.buf = (char *) send_info.buffer;
-    buf.len = send_info.block_size * send_info.block_count;
+    WSABUF bufs[send_info.block_count * (send_info.headers ? 2 : 1)];
+    DWORD bufcount = 0;
+    if (send_info.headers) {
+      // Interleave buffers for headers and payloads
+      for (auto i = 0; i < send_info.block_count; i++) {
+        bufs[bufcount].buf = (char *) &send_info.headers[i * send_info.header_size];
+        bufs[bufcount].len = send_info.header_size;
+        bufcount++;
+        bufs[bufcount].buf = (char *) &send_info.payloads[i * send_info.header_size];
+        bufs[bufcount].len = send_info.payload_size;
+        bufcount++;
+      }
+    }
+    else {
+      // Use a single contiguous buffer for the entire batch
+      bufs[bufcount].buf = (char *) &send_info.payloads[seg_index * send_info.header_size];
+      bufs[bufcount].len = send_info.payload_size * send_info.block_count;
+      bufcount++;
+    }
 
-    msg.lpBuffers = &buf;
-    msg.dwBufferCount = 1;
+    msg.lpBuffers = bufs;
+    msg.dwBufferCount = bufcount;
     msg.dwFlags = 0;
 
     // At most, one DWORD option and one PKTINFO option
@@ -1505,7 +1521,7 @@ namespace platf {
       cm->cmsg_level = IPPROTO_UDP;
       cm->cmsg_type = UDP_SEND_MSG_SIZE;
       cm->cmsg_len = WSA_CMSG_LEN(sizeof(DWORD));
-      *((DWORD *) WSA_CMSG_DATA(cm)) = send_info.block_size;
+      *((DWORD *) WSA_CMSG_DATA(cm)) = send_info.header_size + send_info.payload_size;
     }
 
     msg.Control.len = cmbuflen;

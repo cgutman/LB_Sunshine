@@ -126,11 +126,6 @@ namespace stream {
   };
 
   struct video_packet_enc_prefix_t {
-    video_packet_raw_t *
-    payload() {
-      return (video_packet_raw_t *) (this + 1);
-    }
-
     std::uint8_t iv[12];  // 12-byte IV is ideal for AES-GCM
     std::uint32_t frameNumber;
     std::uint8_t tag[16];
@@ -227,7 +222,6 @@ namespace stream {
   }
   constexpr std::size_t MAX_AUDIO_PACKET_SIZE = 1400;
 
-  using video_packet_t = util::c_ptr<video_packet_raw_t>;
   using audio_aes_t = std::array<char, round_to_pkcs7_padded(MAX_AUDIO_PACKET_SIZE)>;
 
   using av_session_id_t = std::variant<asio::ip::address, std::string>;  // IP address or SS-Ping-Payload from RTSP handshake
@@ -619,15 +613,17 @@ namespace stream {
       size_t blocksize;
       size_t prefixsize;
       util::buffer_t<char> shards;
+      util::buffer_t<char> headers;
+      util::buffer_t<uint8_t *> shards_p;
 
       char *
       data(size_t el) {
-        return &shards[(el + 1) * prefixsize + el * blocksize];
+        return (char *) shards_p[el];
       }
 
       char *
       prefix(size_t el) {
-        return &shards[el * (prefixsize + blocksize)];
+        return prefixsize ? &headers[el * prefixsize] : nullptr;
       }
 
       size_t
@@ -655,24 +651,36 @@ namespace stream {
 
       auto nr_shards = data_shards + parity_shards;
 
-      util::buffer_t<char> shards { nr_shards * (blocksize + prefixsize) };
+      // The first entry in the shards buffer is reserved for a padded data shard
+      util::buffer_t<char> shards { (1 + parity_shards) * blocksize };
       util::buffer_t<uint8_t *> shards_p { nr_shards };
 
       auto next = std::begin(payload);
-      for (auto x = 0; x < nr_shards; ++x) {
-        shards_p[x] = (uint8_t *) &shards[(x + 1) * prefixsize + x * blocksize];
+
+      // Point into the payload buffer for all except the final padded data shard
+      for (auto x = 0; x < data_shards - (pad ? 1 : 0); ++x) {
+        shards_p[x] = (uint8_t *) next;
+        next += blocksize;
+      }
+
+      // If the last data shard needs to be zero-padded, we must use the shards buffer
+      if (pad) {
+        shards_p[data_shards - 1] = (uint8_t *) &shards[0];
 
         // GCC doesn't figure out that std::copy_n() can be replaced with memcpy() here
         // and ends up compiling a horribly slow element-by-element copy loop, so we
         // help it by using memcpy()/memset() directly.
         auto copy_len = std::min<size_t>(blocksize, std::end(payload) - next);
-        std::memcpy(shards_p[x], next, copy_len);
+        std::memcpy(shards_p[data_shards - 1], next, copy_len);
         if (copy_len < blocksize) {
           // Zero any additional space after the end of the payload
-          std::memset(shards_p[x] + copy_len, 0, blocksize - copy_len);
+          std::memset(shards_p[data_shards - 1] + copy_len, 0, blocksize - copy_len);
         }
+      }
 
-        next += copy_len;
+      // Point into our allocated buffer for the parity shards
+      for (auto x = 0; x < parity_shards; ++x) {
+        shards_p[data_shards + x] = (uint8_t *) &shards[(1 + x) * blocksize];
       }
 
       if (fecpercentage != 0) {
@@ -688,7 +696,9 @@ namespace stream {
         fecpercentage,
         blocksize,
         prefixsize,
-        std::move(shards)
+        std::move(shards),
+        util::buffer_t<char> { nr_shards * prefixsize },
+        std::move(shards_p),
       };
     }
   }  // namespace fec
@@ -1439,7 +1449,9 @@ namespace stream {
           auto peer_address = session->video.peer.address();
           auto batch_info = platf::batched_send_info_t {
             nullptr,
-            shards.prefixsize + shards.blocksize,
+            shards.prefixsize,
+            nullptr,
+            shards.blocksize,
             0,
             (uintptr_t) sock.native_handle(),
             peer_address,
@@ -1487,7 +1499,8 @@ namespace stream {
               auto *prefix = (video_packet_enc_prefix_t *) shards.prefix(x);
               prefix->frameNumber = packet->frame_index();
               std::copy(std::begin(iv), std::end(iv), prefix->iv);
-              session->video.cipher->encrypt(std::string_view { (char *) inspect, (size_t) blocksize }, prefix->tag, &iv);
+              session->video.cipher->encrypt(std::string_view { (char *) inspect, (size_t) blocksize },
+                prefix->tag, (uint8_t *) inspect, &iv);
             }
 
             if (x - next_shard_to_send + 1 >= send_batch_size ||
@@ -1510,7 +1523,8 @@ namespace stream {
               }
 
               size_t current_batch_size = x - next_shard_to_send + 1;
-              batch_info.buffer = shards.prefix(next_shard_to_send);
+              batch_info.headers = shards.prefix(next_shard_to_send);
+              batch_info.payloads = shards.data(next_shard_to_send);
               batch_info.block_count = current_batch_size;
 
               frame_send_batch_latency_logger.first_point_now();
@@ -1520,10 +1534,10 @@ namespace stream {
                 BOOST_LOG(verbose) << "Falling back to unbatched send"sv;
                 for (auto y = 0; y < current_batch_size; y++) {
                   auto send_info = platf::send_info_t {
-                    nullptr,
-                    0,
                     shards.prefix(next_shard_to_send + y),
-                    shards.prefixsize + shards.blocksize,
+                    shards.prefixsize,
+                    shards.data(next_shard_to_send + y),
+                    shards.blocksize,
                     (uintptr_t) sock.native_handle(),
                     peer_address,
                     session->video.peer.port(),

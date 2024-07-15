@@ -435,20 +435,37 @@ namespace platf {
 
 #ifdef UDP_SEGMENT
     {
-      struct iovec iov = {};
-
-      msg.msg_iov = &iov;
-      msg.msg_iovlen = 1;
-
       // UDP GSO on Linux currently only supports sending 64K or 64 segments at a time
       size_t seg_index = 0;
       const size_t seg_max = 65536 / 1500;
+      struct iovec iovs[send_info.block_count * (send_info.headers ? 2 : 1)] = {};
+      auto msg_size = send_info.header_size + send_info.payload_size;
       while (seg_index < send_info.block_count) {
-        iov.iov_base = (void *) &send_info.buffer[seg_index * send_info.block_size];
-        iov.iov_len = send_info.block_size * std::min(send_info.block_count - seg_index, seg_max);
+        int iovlen = 0;
+        auto segs_in_batch = std::min(send_info.block_count - seg_index, seg_max);
+        if (send_info.headers) {
+          // Interleave iovs for headers and payloads
+          for (auto i = 0; i < segs_in_batch; i++) {
+            iovs[iovlen].iov_base = (void *) &send_info.headers[(seg_index + i) * send_info.header_size];
+            iovs[iovlen].iov_len = send_info.header_size;
+            iovlen++;
+            iovs[iovlen].iov_base = (void *) &send_info.payloads[(seg_index + i) * send_info.header_size];
+            iovs[iovlen].iov_len = send_info.payload_size;
+            iovlen++;
+          }
+        }
+        else {
+          // Use a single contiguous iov for the entire batch
+          iovs[iovlen].iov_base = (void *) &send_info.payloads[seg_index * send_info.header_size];
+          iovs[iovlen].iov_len = send_info.payload_size * segs_in_batch;
+          iovlen++;
+        }
+
+        msg.msg_iov = iovs;
+        msg.msg_iovlen = iovlen;
 
         // We should not use GSO if the data is <= one full block size
-        if (iov.iov_len > send_info.block_size) {
+        if (segs_in_batch > 1) {
           msg.msg_controllen = cmbuflen + CMSG_SPACE(sizeof(uint16_t));
 
           // Enable GSO to perform segmentation of our buffer for us
@@ -456,7 +473,7 @@ namespace platf {
           cm->cmsg_level = SOL_UDP;
           cm->cmsg_type = UDP_SEGMENT;
           cm->cmsg_len = CMSG_LEN(sizeof(uint16_t));
-          *((uint16_t *) CMSG_DATA(cm)) = send_info.block_size;
+          *((uint16_t *) CMSG_DATA(cm)) = msg_size;
         }
         else {
           msg.msg_controllen = cmbuflen;
@@ -483,10 +500,11 @@ namespace platf {
             continue;
           }
 
+          BOOST_LOG(warning) << "sendmsg() failed: "sv << errno;
           break;
         }
 
-        seg_index += bytes_sent / send_info.block_size;
+        seg_index += bytes_sent / msg_size;
       }
 
       // If we sent something, return the status and don't fall back to the non-GSO path.
@@ -498,18 +516,24 @@ namespace platf {
 
     {
       // If GSO is not supported, use sendmmsg() instead.
-      struct mmsghdr msgs[send_info.block_count];
-      struct iovec iovs[send_info.block_count];
+      struct mmsghdr msgs[send_info.block_count] = {};
+      struct iovec iovs[send_info.block_count * (send_info.headers ? 2 : 1)] = {};
+      int iov_idx = 0;
       for (size_t i = 0; i < send_info.block_count; i++) {
-        iovs[i] = {};
-        iovs[i].iov_base = (void *) &send_info.buffer[i * send_info.block_size];
-        iovs[i].iov_len = send_info.block_size;
+        msgs[i].msg_hdr.msg_iov = &iovs[iov_idx];
+        msgs[i].msg_hdr.msg_iovlen = send_info.headers ? 2 : 1;
 
-        msgs[i] = {};
+        if (send_info.headers) {
+          iovs[iov_idx].iov_base = (void *) &send_info.headers[i * send_info.header_size];
+          iovs[iov_idx].iov_len = send_info.header_size;
+          iov_idx++;
+        }
+        iovs[iov_idx].iov_base = (void *) &send_info.payloads[i * send_info.payload_size];
+        iovs[iov_idx].iov_len = send_info.payload_size;
+        iov_idx++;
+
         msgs[i].msg_hdr.msg_name = msg.msg_name;
         msgs[i].msg_hdr.msg_namelen = msg.msg_namelen;
-        msgs[i].msg_hdr.msg_iov = &iovs[i];
-        msgs[i].msg_hdr.msg_iovlen = 1;
         msgs[i].msg_hdr.msg_control = cmbuf.buf;
         msgs[i].msg_hdr.msg_controllen = cmbuflen;
       }
