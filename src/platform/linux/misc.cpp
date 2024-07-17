@@ -433,12 +433,14 @@ namespace platf {
       memcpy(CMSG_DATA(pktinfo_cm), &pktInfo, sizeof(pktInfo));
     }
 
+    auto const max_iovs_per_msg = send_info.payload_buffers.size() + (send_info.headers ? 1 : 0);
+
 #ifdef UDP_SEGMENT
     {
       // UDP GSO on Linux currently only supports sending 64K or 64 segments at a time
       size_t seg_index = 0;
       const size_t seg_max = 65536 / 1500;
-      struct iovec iovs[send_info.block_count * (send_info.headers ? 2 : 1)] = {};
+      struct iovec iovs[(send_info.headers ? send_info.block_count : 1) * max_iovs_per_msg] = {};
       auto msg_size = send_info.header_size + send_info.payload_size;
       while (seg_index < send_info.block_count) {
         int iovlen = 0;
@@ -449,16 +451,23 @@ namespace platf {
             iovs[iovlen].iov_base = (void *) &send_info.headers[(seg_index + i) * send_info.header_size];
             iovs[iovlen].iov_len = send_info.header_size;
             iovlen++;
-            iovs[iovlen].iov_base = (void *) &send_info.payloads[(seg_index + i) * send_info.header_size];
+            auto payload_desc = send_info.buffer_for_payload_offset((seg_index + i) * send_info.payload_size);
+            iovs[iovlen].iov_base = (void *) payload_desc->buffer;
             iovs[iovlen].iov_len = send_info.payload_size;
             iovlen++;
           }
         }
         else {
-          // Use a single contiguous iov for the entire batch
-          iovs[iovlen].iov_base = (void *) &send_info.payloads[seg_index * send_info.header_size];
-          iovs[iovlen].iov_len = send_info.payload_size * segs_in_batch;
-          iovlen++;
+          // Translate buffer descriptors into iovs
+          auto payload_offset = seg_index * send_info.payload_size;
+          auto payload_length = (seg_index + segs_in_batch) * send_info.payload_size;
+          while (payload_offset < payload_length) {
+            auto payload_desc = send_info.buffer_for_payload_offset(payload_offset);
+            iovs[iovlen].iov_base = (void *) payload_desc->buffer;
+            iovs[iovlen].iov_len = std::min(payload_desc->size, payload_length - payload_offset);
+            payload_offset += iovs[iovlen].iov_len;
+            iovlen++;
+          }
         }
 
         msg.msg_iov = iovs;
@@ -528,7 +537,8 @@ namespace platf {
           iovs[iov_idx].iov_len = send_info.header_size;
           iov_idx++;
         }
-        iovs[iov_idx].iov_base = (void *) &send_info.payloads[i * send_info.payload_size];
+        auto payload_desc = send_info.buffer_for_payload_offset(i * send_info.payload_size);
+        iovs[iov_idx].iov_base = (void *) payload_desc->buffer;
         iovs[iov_idx].iov_len = send_info.payload_size;
         iov_idx++;
 

@@ -636,9 +636,14 @@ namespace stream {
     encode(const std::string_view &payload, size_t blocksize, size_t fecpercentage, size_t minparityshards, size_t prefixsize) {
       auto payload_size = payload.size();
 
-      auto pad = payload_size % blocksize != 0;
+      // Payload size must be aligned to block size
+      assert(payload_size % blocksize == 0);
+      if (payload_size % blocksize) {
+        BOOST_LOG(error) << "Violation of block size constraint";
+        abort();
+      }
 
-      auto data_shards = payload_size / blocksize + (pad ? 1 : 0);
+      auto data_shards = payload_size / blocksize;
       auto parity_shards = (data_shards * fecpercentage + 99) / 100;
 
       // increase the FEC percentage for this frame if the parity shard minimum is not met
@@ -651,34 +656,17 @@ namespace stream {
 
       auto nr_shards = data_shards + parity_shards;
 
-      // The first entry in the shards buffer is reserved for a padded data shard
-      util::buffer_t<char> shards { (1 + parity_shards) * blocksize };
       util::buffer_t<uint8_t *> shards_p { nr_shards };
 
-      auto next = std::begin(payload);
-
       // Point into the payload buffer for all except the final padded data shard
-      for (auto x = 0; x < data_shards - (pad ? 1 : 0); ++x) {
+      auto next = std::begin(payload);
+      for (auto x = 0; x < data_shards; ++x) {
         shards_p[x] = (uint8_t *) next;
         next += blocksize;
       }
 
-      // If the last data shard needs to be zero-padded, we must use the shards buffer
-      if (pad) {
-        shards_p[data_shards - 1] = (uint8_t *) &shards[0];
-
-        // GCC doesn't figure out that std::copy_n() can be replaced with memcpy() here
-        // and ends up compiling a horribly slow element-by-element copy loop, so we
-        // help it by using memcpy()/memset() directly.
-        auto copy_len = std::min<size_t>(blocksize, std::end(payload) - next);
-        std::memcpy(shards_p[data_shards - 1], next, copy_len);
-        if (copy_len < blocksize) {
-          // Zero any additional space after the end of the payload
-          std::memset(shards_p[data_shards - 1] + copy_len, 0, blocksize - copy_len);
-        }
-      }
-
       // Point into our allocated buffer for the parity shards
+      util::buffer_t<char> shards { parity_shards * blocksize };
       for (auto x = 0; x < parity_shards; ++x) {
         shards_p[data_shards + x] = (uint8_t *) &shards[(1 + x) * blocksize];
       }
@@ -1336,7 +1324,7 @@ namespace stream {
 
       auto fecPercentage = config::stream.fec_percentage;
 
-      // Insert space for packet headers
+      // Insert space for packet headers. This will also align the payload size to blocksize.
       auto blocksize = session->config.packetsize + MAX_RTP_HEADER_SIZE;
       auto payload_blocksize = blocksize - sizeof(video_packet_raw_t);
       auto payload_new = concat_and_insert(sizeof(video_packet_raw_t), payload_blocksize,

@@ -606,10 +606,19 @@ namespace platf {
   void
   restart();
 
+  struct buffer_descriptor_t {
+    // Buffers must be aligned to payload size
+    const char *buffer;
+    size_t size;
+
+    // Logical offset of this buffer in the entire payload
+    ptrdiff_t logical_offset;
+  };
+
   struct batched_send_info_t {
     const char *headers;
     size_t header_size;
-    const char *payloads;
+    std::vector<buffer_descriptor_t> payload_buffers;
     size_t payload_size;
 
     size_t block_count;
@@ -618,6 +627,26 @@ namespace platf {
     boost::asio::ip::address &target_address;
     uint16_t target_port;
     boost::asio::ip::address &source_address;
+
+    /**
+     * @brief Returns a payload buffer descriptor for the given payload offset.
+     * @param offset The offset in the total payload data.
+     * @return Buffer descriptor describing the region at the given offset.
+     */
+    std::optional<buffer_descriptor_t>
+    buffer_for_payload_offset(ptrdiff_t offset) {
+      for (const auto &desc : payload_buffers) {
+        if (offset >= desc.logical_offset && offset < desc.logical_offset + desc.size) {
+          return {{
+            desc.buffer + (offset - desc.logical_offset),
+            desc.size - (offset - desc.logical_offset),
+            offset
+          }};
+        }
+      }
+
+      return std::nullopt;
+    }
   };
   bool
   send_batch(batched_send_info_t &send_info);

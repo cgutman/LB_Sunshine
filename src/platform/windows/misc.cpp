@@ -1460,14 +1460,14 @@ namespace platf {
         bufs[bufcount].buf = (char *) &send_info.headers[i * send_info.header_size];
         bufs[bufcount].len = send_info.header_size;
         bufcount++;
-        bufs[bufcount].buf = (char *) &send_info.payloads[i * send_info.header_size];
+        bufs[bufcount].buf = (char *) &send_info.payloads[i * send_info.payload_size];
         bufs[bufcount].len = send_info.payload_size;
         bufcount++;
       }
     }
     else {
       // Use a single contiguous buffer for the entire batch
-      bufs[bufcount].buf = (char *) &send_info.payloads[seg_index * send_info.header_size];
+      bufs[bufcount].buf = (char *) &send_info.payloads[seg_index * send_info.payload_size];
       bufs[bufcount].len = send_info.payload_size * send_info.block_count;
       bufcount++;
     }
