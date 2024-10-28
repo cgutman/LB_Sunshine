@@ -1395,6 +1395,8 @@ namespace video {
         packet->frame_timestamp = frame_timestamp;
       }
 
+      cbs::trim_padding(ctx.get(), av_packet);
+
       packet->replacements = &session.replacements;
       packet->channel_data = channel_data;
       packets->raise(std::move(packet));

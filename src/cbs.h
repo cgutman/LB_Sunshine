@@ -31,6 +31,14 @@ namespace cbs {
   make_sps_h264(const AVCodecContext *ctx, const AVPacket *packet);
 
   /**
+   * @brief Trims padding from the end of the encoded packet.
+   * @param avctx The AVCodecContext of the encoder.
+   * @param packet The packet to trim.
+   */
+  void
+  trim_padding(const AVCodecContext *avctx, AVPacket *packet);
+
+  /**
    * @brief Validates the Sequence Parameter Set (SPS) of a given packet.
    * @param packet The packet to validate.
    * @param codec_id The ID of the codec used (either AV_CODEC_ID_H264 or AV_CODEC_ID_H265).

@@ -3,6 +3,7 @@
  * @brief Definitions for FFmpeg Coded Bitstream API.
  */
 extern "C" {
+#include <cbs/av1.h>
 #include <cbs/cbs_h264.h>
 #include <cbs/cbs_h265.h>
 #include <cbs/h264_levels.h>
@@ -215,6 +216,44 @@ namespace cbs {
         write(ctx, sps_p->nal_unit_header.nal_unit_type, (void *) &sps_p->nal_unit_header, AV_CODEC_ID_H265),
       },
     };
+  }
+
+  void
+  trim_padding(const AVCodecContext *avctx, AVPacket *packet) {
+    // We don't support trimming packets that don't use referenced buffers
+    if (!packet->buf) {
+      return;
+    }
+
+    // We only trim padding from AV1 since it can be parsed cheaply
+    if (avctx->codec_id != AV_CODEC_ID_AV1) {
+      return;
+    }
+
+    cbs::ctx_t ctx;
+    if (ff_cbs_init(&ctx, avctx->codec_id, nullptr)) {
+      return;
+    }
+
+    cbs::frag_t frag;
+    int err = ff_cbs_read_packet(ctx.get(), &frag, packet);
+    if (err < 0) {
+      char err_str[AV_ERROR_MAX_STRING_SIZE] { 0 };
+      BOOST_LOG(error) << "Couldn't read packet for trimming: "sv << av_make_error_string(err_str, AV_ERROR_MAX_STRING_SIZE, err);
+      return;
+    }
+
+    for (int i = 0; i < frag.nb_units; i++) {
+      auto &unit = frag.units[i];
+      if (unit.type == AV1_OBU_PADDING) {
+        if (i == frag.nb_units - 1) {
+          packet->size -= unit.data_size;
+        }
+        else {
+          BOOST_LOG(warning) << "Unexpected padding found within frame"sv;
+        }
+      }
+    }
   }
 
   /**
