@@ -17,7 +17,6 @@ publisher_website=""
 publisher_issue_url="https://app.lizardbyte.dev/support"
 skip_cleanup=0
 skip_cuda=0
-skip_libva=0
 skip_package=0
 sudo_cmd="sudo"
 ubuntu_test_repo=0
@@ -84,7 +83,6 @@ Options:
                            If you provide a modified version of Sunshine, we kindly request that you use your own url.
   --skip-cleanup           Do not restore the original gcc alternatives, or the math-vector.h file.
   --skip-cuda              Skip CUDA installation.
-  --skip-libva             Skip libva installation. This will automatically be enabled if passing --appimage-build.
   --skip-package           Skip creating DEB, or RPM package.
   --ubuntu-test-repo       Install ppa:ubuntu-toolchain-r/test repo on Ubuntu.
   --step                   Which step(s) to run: deps, cmake, validation, build, package, cleanup, or all (default: all)
@@ -112,7 +110,6 @@ while getopts ":hs-:" opt; do
         help) _usage 0 ;;
         appimage-build)
           appimage_build=1
-          skip_libva=1
           ;;
         cuda-patches)
           cuda_patches=1
@@ -131,7 +128,6 @@ while getopts ":hs-:" opt; do
           ;;
         skip-cleanup) skip_cleanup=1 ;;
         skip-cuda) skip_cuda=1 ;;
-        skip-libva) skip_libva=1 ;;
         skip-package) skip_package=1 ;;
         sudo-off) sudo_cmd="" ;;
         ubuntu-test-repo) ubuntu_test_repo=1 ;;
@@ -173,7 +169,6 @@ function add_arch_deps() {
     'libmfx'
     'libnotify'
     'libpulse'
-    'libva'
     'libx11'
     'libxcb'
     'libxfixes'
@@ -189,12 +184,6 @@ function add_arch_deps() {
     'udev'
     'wayland'
   )
-
-  if [ "$skip_libva" == 0 ]; then
-    dependencies+=(
-      "libva"  # VA-API
-    )
-  fi
 
   if [ "$skip_cuda" == 0 ]; then
     dependencies+=(
@@ -246,12 +235,6 @@ function add_debian_based_deps() {
     "wget"  # necessary for cuda install with `run` file
     "xvfb"  # necessary for headless unit testing
   )
-
-  if [ "$skip_libva" == 0 ]; then
-    dependencies+=(
-      "libva-dev"  # VA-API
-    )
-  fi
 }
 
 function add_test_ppa() {
@@ -317,12 +300,6 @@ function add_fedora_deps() {
     "which"  # necessary for cuda install with `run` file
     "xorg-x11-server-Xvfb"  # necessary for headless unit testing
   )
-
-  if [ "$skip_libva" == 0 ]; then
-    dependencies+=(
-      "libva-devel"  # VA-API
-    )
-  fi
 }
 
 function install_cuda() {

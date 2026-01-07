@@ -34,7 +34,6 @@ pkg install -y \
   ftp/curl \
   graphics/libdrm \
   graphics/wayland \
-  multimedia/libva \
   net/miniupnpc \
   ports-mgmt/pkg \
   security/openssl \

@@ -38,7 +38,6 @@ depends=(
   'libmfx'
   'libnotify'
   'libpulse'
-  'libva'
   'libx11'
   'libxcb'
   'libxfixes'

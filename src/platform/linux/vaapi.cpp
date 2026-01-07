@@ -13,17 +13,6 @@ extern "C" {
 #include <libavutil/pixdesc.h>
 #include <va/va.h>
 #include <va/va_drm.h>
-#if !VA_CHECK_VERSION(1, 9, 0)
-  // vaSyncBuffer stub allows Sunshine built against libva <2.9.0 to link against ffmpeg on libva 2.9.0 or later
-  VAStatus
-    vaSyncBuffer(
-      VADisplay dpy,
-      VABufferID buf_id,
-      uint64_t timeout_ns
-    ) {
-    return VA_STATUS_ERROR_UNIMPLEMENTED;
-  }
-#endif
 }
 
 // local includes

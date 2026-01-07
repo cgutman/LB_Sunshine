@@ -79,8 +79,6 @@ set(CPACK_DEBIAN_PACKAGE_DEPENDS "\
             libnuma1, \
             libopus0, \
             libpulse0, \
-            libva2, \
-            libva-drm2, \
             libwayland-client0, \
             libx11-6, \
             miniupnpc, \
@@ -92,7 +90,6 @@ set(CPACK_RPM_PACKAGE_REQUIRES "\
             libdrm >= 2.4.97, \
             libevdev >= 1.5.6, \
             libopusenc >= 0.2.1, \
-            libva >= 2.14.0, \
             libwayland-client >= 1.20.0, \
             libX11 >= 1.7.3.1, \
             mesa-libgbm >= 25.0.7, \

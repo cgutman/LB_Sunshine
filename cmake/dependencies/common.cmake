@@ -30,11 +30,8 @@ include_directories(SYSTEM ${MINIUPNP_INCLUDE_DIRS})
 if(NOT DEFINED FFMPEG_PREPARED_BINARIES)
     if(WIN32)
         set(FFMPEG_PLATFORM_LIBRARIES mfplat ole32 strmiids mfuuid vpl)
-    elseif(FREEBSD)
-        # numa is not available on FreeBSD
-        set(FFMPEG_PLATFORM_LIBRARIES va va-drm va-x11 X11)
-    elseif(UNIX AND NOT APPLE)
-        set(FFMPEG_PLATFORM_LIBRARIES numa va va-drm va-x11 X11)
+    elseif(UNIX AND NOT APPLE AND NOT FREEBSD)
+        set(FFMPEG_PLATFORM_LIBRARIES numa)
     endif()
     set(FFMPEG_PREPARED_BINARIES
             "${CMAKE_SOURCE_DIR}/third-party/build-deps/dist/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
@@ -52,6 +49,11 @@ if(NOT DEFINED FFMPEG_PREPARED_BINARIES)
         set(HDR10_PLUS_LIBRARY
                 "${FFMPEG_PREPARED_BINARIES}/lib/libhdr10plus.a")
     endif()
+    if(EXISTS "${FFMPEG_PREPARED_BINARIES}/lib/libva.a")
+        set(LIBVA_LIBRARIES
+                "${FFMPEG_PREPARED_BINARIES}/lib/libva.a"
+                "${FFMPEG_PREPARED_BINARIES}/lib/libva-drm.a")
+    endif()
     set(FFMPEG_LIBRARIES
             "${FFMPEG_PREPARED_BINARIES}/lib/libavcodec.a"
             "${FFMPEG_PREPARED_BINARIES}/lib/libswscale.a"
@@ -61,6 +63,7 @@ if(NOT DEFINED FFMPEG_PREPARED_BINARIES)
             "${FFMPEG_PREPARED_BINARIES}/lib/libx264.a"
             "${FFMPEG_PREPARED_BINARIES}/lib/libx265.a"
             ${HDR10_PLUS_LIBRARY}
+            ${LIBVA_LIBRARIES}
             ${FFMPEG_PLATFORM_LIBRARIES})
 else()
     set(FFMPEG_LIBRARIES

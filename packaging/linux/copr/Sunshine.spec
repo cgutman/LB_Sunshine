@@ -31,7 +31,6 @@ BuildRequires: libcurl-devel
 BuildRequires: libdrm-devel
 BuildRequires: libevdev-devel
 BuildRequires: libnotify-devel
-BuildRequires: libva-devel
 BuildRequires: libX11-devel
 BuildRequires: libxcb-devel
 BuildRequires: libXcursor-devel
@@ -132,7 +131,6 @@ Requires: libcurl >= 7.0
 Requires: libdrm > 2.4.97
 Requires: libevdev >= 1.5.6
 Requires: libopusenc >= 0.2.1
-Requires: libva >= 2.14.0
 Requires: libwayland-client >= 1.20.0
 Requires: libX11 >= 1.7.3.1
 Requires: numactl-libs >= 2.0.14
@@ -148,7 +146,6 @@ Requires: libcurl4
 Requires: libdrm2
 Requires: libevdev2
 Requires: libopusenc0
-Requires: libva2
 Requires: libwayland-client0
 Requires: libX11-6
 Requires: libnuma1
